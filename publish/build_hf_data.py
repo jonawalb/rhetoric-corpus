@@ -110,8 +110,18 @@ def load_wayback(corpus: Path, files: Iterable[str]) -> Dict[str, str]:
     return out
 
 
+def media_duplicate_rowids(con: sqlite3.Connection) -> set:
+    """Official documents whose text is identical to a state media / media / commentary document (e.g. a presidential
+    speech that BelTA also ran verbatim). They are left out of the full-document shards (still searchable as
+    sentences), so assert_no_media_text() holds without publishing any text a media outlet also carries."""
+    media = {hashlib.sha1(t.encode()).digest() for (t,) in
+             con.execute("SELECT text FROM docs WHERE outlet != 'official' AND length(text) >= 40")}
+    return {r for r, t in con.execute("SELECT rowid, text FROM docs WHERE outlet = 'official' AND length(text) >= 40")
+            if hashlib.sha1(t.encode()).digest() in media}
+
+
 def build_doc_shards(con: sqlite3.Connection, out: Path, wayback: Dict[str, str], shard_kb: int = 900,
-                     where: str = "1", args: tuple = ()) -> dict:
+                     where: str = "1", args: tuple = (), skip: frozenset = frozenset()) -> dict:
     """Write docs/<k>.json.gz + docs/index.json.gz for every official document (rowid order). Returns sizes."""
     out.mkdir(parents=True, exist_ok=True)
     ranges: List[List[int]] = []
@@ -135,7 +145,7 @@ def build_doc_shards(con: sqlite3.Connection, out: Path, wayback: Dict[str, str]
                        f"WHERE outlet = 'official' AND ({where}) ORDER BY rowid", args)
     n = 0
     for rowid, did, outlet, source, org, lang, date, url, title, speaker, text in rows:
-        if outlet != "official":  # belt and braces; the query already filters
+        if outlet != "official" or rowid in skip:  # belt and braces; the query already filters
             continue
         shard[str(rowid)] = {"date": date, "source": source, "org": org or "", "lang": lang, "title": title or "",
                              "speaker": speaker or "", "url": url or "", "wayback": normalize_wayback(url, wayback.get(did)),
@@ -147,7 +157,7 @@ def build_doc_shards(con: sqlite3.Connection, out: Path, wayback: Dict[str, str]
     flush()
     (out / "index.json.gz").write_bytes(gz({"ranges": ranges}))
     sizes.sort()
-    return {"docs": n, "shards": len(ranges), "gz_mb": round(sum(sizes) / 1e6, 1),
+    return {"docs": n, "skipped_media_duplicates": len(skip), "shards": len(ranges), "gz_mb": round(sum(sizes) / 1e6, 1),
             "shard_kb_min_median_max": [round(sizes[i] / 1e3) for i in (0, len(sizes) // 2, -1)] if sizes else []}
 
 
@@ -318,7 +328,8 @@ def build(a: argparse.Namespace, key: bytes, magic: bytes) -> str:
                    check=True)
     con = sqlite3.connect(f"file:{a.corpus / 'index' / 'corpus.sqlite'}?mode=ro", uri=True)
     files = [f for (f,) in con.execute("SELECT DISTINCT file FROM docs WHERE outlet = 'official'")]
-    info = build_doc_shards(con, plain / "docs", load_wayback(a.corpus, files), a.doc_shard_kb)
+    info = build_doc_shards(con, plain / "docs", load_wayback(a.corpus, files), a.doc_shard_kb,
+                            skip=frozenset(media_duplicate_rowids(con)))
     n = assert_no_media_text(plain / "docs", con)
     print(f"full documents: {json.dumps(info)}; media guard passed on {n} documents")
     add_docs_to_meta(plain, info)

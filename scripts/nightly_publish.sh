@@ -1,19 +1,18 @@
 #!/bin/zsh
-# Nightly refresh of the public Rhetoric Search (Interactive Deterrence, jwalberg.com). NOT scheduled; run by hand
-# or from launchd/cron once Jonathan decides to:
-#   1. build_index.py                     bring index/corpus.sqlite up to date with docs/ (incremental)
-#   2. python -m scripts.semantic.run     semantic layer, incremental (tone, targets, topics, trends, echo, alerts)
-#   3. build_trends.py                    Trends page data (tsm-strait-layers tools/rhetoric-search/data/trends/, stays in the site)
-#   4. build_hf_data.py --upload          search + full-document data, sealed, to the Hugging Face dataset repo
-#                                         (HF_REPO in tools/rhetoric-search/js/config.js; needs `hf auth login` or HF_TOKEN)
-#   5. build_site.py --site deterrence    rebuild and deploy the site (gate, trends, page code)
+# LAPTOP FALLBACK ONLY. The nightly refresh now runs on GitHub Actions (.github/workflows/nightly.yml) against the
+# private Hugging Face store. Do not run this while the CI job owns the store: it publishes from this laptop's copy.
+# Steps (same as CI after collection):
+#   1. build_index.py                         bring index/corpus.sqlite up to date with docs/ (incremental)
+#   2. python -m scripts.semantic.run         semantic layer, incremental
+#   3. publish/build_trends.py                Trends data -> staging/trends
+#   4. publish/build_hf_data.py --upload      search + full documents + Trends, sealed, to the Hugging Face data repo
+#                                             (needs `hf auth login` or HF_TOKEN; tier password from the keychain)
+# The site is not redeployed: the live page reads search and Trends data from the Hugging Face build.
 # Guards: a lock directory (.nightly_publish.lock) so two runs never overlap, and a free-disk floor (MIN_FREE_GB,
-# default 8) checked before starting and again before the data build. Log: logs/nightly_publish.log.
-# A run killed with SIGKILL leaves the lock behind: check no run is active (pgrep -f nightly_publish), then
-# rmdir ~/Projects/rhetoric-corpus/.nightly_publish.lock
+# default 8). Log: logs/nightly_publish.log. A run killed with SIGKILL leaves the lock behind: check no run is active
+# (pgrep -f nightly_publish), then rmdir ~/Projects/rhetoric-corpus/.nightly_publish.lock
 set -euo pipefail
 CORPUS=${0:A:h:h}
-SITE=${SITE_REPO:-$HOME/Projects/tsm-strait-layers}
 MIN_FREE_GB=${MIN_FREE_GB:-8}
 LOCK=$CORPUS/.nightly_publish.lock
 
@@ -40,10 +39,7 @@ disk_ok
 cd "$CORPUS"
 uv run python scripts/build_index.py
 uv run python -m scripts.semantic.run
-
-cd "$SITE"
-uv run --project "$CORPUS" python tools/rhetoric-search/scripts/build_trends.py
+uv run python publish/build_trends.py
 disk_ok
-uv run --project "$CORPUS" --with cryptography python tools/rhetoric-search/scripts/build_hf_data.py --upload
-uv run --with cryptography scripts/build_site.py --site deterrence
+uv run python publish/build_hf_data.py --trends staging/trends --upload
 echo "==== $(date) nightly_publish done"
