@@ -248,11 +248,27 @@ def size_report(hf_root: Path, build_id: str) -> dict:
 
 
 # ---- upload (only with --upload / --upload-only) -------------------------------------------------------------
-def upload(hf_root: Path, build_id: str, repo: str, keep: int, batch: int = 500) -> None:
+def check_key_opens_remote(api, repo: str, remote: set, key: bytes) -> None:
+    """Refuse to publish with a key that cannot open the live data/current.json (a wrong tier password would lock
+    every visitor out). Skipped when the repo has no pointer yet."""
+    from vault import unseal_file  # noqa: E402
+    if "data/current.json" not in remote:
+        return
+    blob = Path(api.hf_hub_download(repo, "data/current.json", repo_type="dataset", force_download=True)).read_bytes()
+    try:
+        json.loads(unseal_file(key, blob))
+    except Exception as e:  # noqa: BLE001  InvalidTag: another key sealed the live data
+        raise SystemExit("the tier key does not open the published data/current.json (wrong rhetoric-tier password?); "
+                         "nothing uploaded") from e
+
+
+def upload(hf_root: Path, build_id: str, repo: str, keep: int, batch: int = 500, key: bytes | None = None) -> None:
     from huggingface_hub import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete, HfApi
     api = HfApi()
     api.create_repo(repo, repo_type="dataset", private=False, exist_ok=True)
     remote = set(api.list_repo_files(repo, repo_type="dataset"))
+    if key is not None:
+        check_key_opens_remote(api, repo, remote, key)
     remote_builds = sorted({f.split("/")[1] for f in remote if f.startswith("data/") and f.count("/") >= 2})
     prev = next((b for b in reversed(remote_builds) if b != build_id and f"data/{b}/manifest.json" in remote), None)
     prev_files = {}
@@ -352,7 +368,7 @@ def main() -> None:
         build_id = build(a, key, magic)
     print(json.dumps(size_report(hf_root, build_id)))
     if a.upload or a.upload_only:
-        upload(hf_root, build_id, a.repo, a.keep)
+        upload(hf_root, build_id, a.repo, a.keep, key=key)
         return
     builds = staged_builds(hf_root)
     prev = builds[-2] if len(builds) > 1 else None
