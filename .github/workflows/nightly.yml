@@ -35,6 +35,9 @@ jobs:
   nightly:
     runs-on: ubuntu-latest
     timeout-minutes: 355
+    defaults:
+      run:
+        shell: bash   # = bash -eo pipefail: a failing command before | tail still fails the step
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       RHETORIC_TIER_PASSWORD: ${{ secrets.RHETORIC_TIER_PASSWORD }}

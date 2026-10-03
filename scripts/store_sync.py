@@ -279,6 +279,7 @@ def verify(repo: str) -> dict:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("cmd", choices=["pull", "push", "verify", "squash"])
     ap.add_argument("--repo", default=REPO)
