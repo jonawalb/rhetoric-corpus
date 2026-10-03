@@ -112,11 +112,9 @@ def api():
 
 def remote_manifest(hf, repo: str) -> Dict[str, dict]:
     from huggingface_hub import hf_hub_download
-    from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
-    try:
-        path = hf_hub_download(repo, MANIFEST, repo_type="dataset", force_download=True)
-    except (EntryNotFoundError, RepositoryNotFoundError):
+    if not hf.repo_exists(repo, repo_type="dataset") or not hf.file_exists(repo, MANIFEST, repo_type="dataset"):
         return {}
+    path = hf_hub_download(repo, MANIFEST, repo_type="dataset", force_download=True)
     return json.loads(Path(path).read_text())["files"]
 
 
