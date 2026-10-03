@@ -1,0 +1,18 @@
+# Data stays out of git (large, and full texts are private). Code, SOURCES.md and terms are versioned.
+docs/
+raw/
+index/
+state/
+.venv/
+__pycache__/
+*.pyc
+logs/
+release/
+staging/
+.nightly_publish.lock/
+# Reports quote corpus texts: kept in the private store (scripts/store_sync.py), never in this public repo.
+reports/
+.store_dl/
+.store_pulled
+.pytest_cache/
+.ruff_cache/

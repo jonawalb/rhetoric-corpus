@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rhetoric Trends (private)</title>
+<style>
+/* Same token names and values as tsm-strait-layers shared/css/tsm.css, so ui/trends.css renders identically. */
+:root { color-scheme: light; --bg:#f2f2ee; --panel:#fbfbf8; --ink:#14201a; --muted:#56625b; --faint:#6f7a73; --rule:#d3d6cd; --chip:#e7e9e1;
+  --brand:#033303; --accent:#e8753a; --blue:#1b4fd4; --blue-soft:rgba(27,79,212,.12); --red:#c62828; --good:#2c7a4b; --warn:#8f5d0f; --bad:#b3261e;
+  --c1:#1b4fd4; --c2:#cf4d12; --c3:#0c8474; --c4:#a1487a; --c5:#a88000; --c6:#6a4fb5; --c7:#2c6d8a; --c8:#6b5b3e;
+  --display:"Zilla Slab",Georgia,serif; --body:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  --axis-font:400 11px var(--mono); --axis-ink:var(--muted); --axis-line:var(--faint); }
+@media (prefers-color-scheme: dark) { :root { color-scheme: dark; --bg:#0c120e; --panel:#121a15; --ink:#dfe7e1; --muted:#9daba2; --faint:#85928a; --rule:#2a382f; --chip:#18221c;
+  --brand:#8fcf9d; --accent:#f08a52; --blue:#72a0ff; --blue-soft:rgba(114,160,255,.15); --red:#ff5f56; --good:#4fbf7d; --warn:#e0a43a; --bad:#ff6b5e;
+  --c1:#72a0ff; --c2:#ff8a3d; --c3:#2cc2ac; --c4:#d77ab0; --c5:#efc12f; --c6:#a68ef0; --c7:#63b3d6; --c8:#c8b48a; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 var(--body); padding:0 16px 40px; overflow-wrap:break-word; }
+header { max-width:1400px; margin:0 auto; padding:16px 0 10px; border-bottom:3px solid var(--accent); display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:end; }
+h1, h2, h3 { font-family:var(--display); }
+h1 { margin:0; font-size:28px; }
+header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
+header nav a { margin-left:12px; font-weight:600; }
+main { max-width:1400px; margin:14px auto 0; }
+a { color:var(--blue); }
+.fine { font-size:12px; color:var(--muted); margin:0; }
+.num { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+.card { background:var(--panel); border:1px solid var(--rule); border-radius:4px; }
+.btn { font:inherit; color:inherit; border-radius:3px; padding:7px 13px; cursor:pointer; font-weight:600; font-size:13px; border:1px solid var(--rule); background:transparent; }
+.btn:hover { border-color:var(--muted); }
+.pill { display:inline-block; font-family:var(--mono); font-size:10.5px; padding:1px 6px; border-radius:9px; border:1px solid currentColor; white-space:nowrap; }
+.tablewrap { overflow-x:auto; border:1px solid var(--rule); border-radius:4px; background:var(--panel); }
+.tablewrap table { border-collapse:collapse; width:100%; font-size:12.5px; }
+.tablewrap th, .tablewrap td { text-align:left; padding:6px 9px; border-bottom:1px solid var(--rule); vertical-align:top; }
+.tablewrap th { font-family:var(--display); font-weight:600; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); }
+.src { font-size:12.5px; color:var(--muted); padding-left:1.1em; margin:0; display:flex; flex-direction:column; gap:5px; }
+.tooltip { position:absolute; pointer-events:none; background:var(--panel); color:var(--ink); border:1px solid var(--rule); border-left:3px solid var(--accent); border-radius:4px; padding:7px 10px; font:12.5px/1.4 var(--body); max-width:min(280px, calc(100vw - 32px)); box-shadow:0 6px 20px rgba(0,0,0,.18); z-index:20; }
+.tooltip[hidden] { display:none; }
+.tooltip .tt-d, .tooltip small { display:block; font-family:var(--mono); font-size:11px; color:var(--muted); }
+.xlink { display:inline-block; font-size:12px; font-weight:600; color:var(--blue); margin-top:4px; }
+svg text.tsm-axis { font:var(--axis-font); fill:var(--axis-ink); }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+</style>
+<link rel="stylesheet" href="/ui/trends.css">
+</head>
+<body>
+<header>
+  <div><h1>Rhetoric Trends</h1><p>Private, local: full evidence text, all alert tiers, live evidence for any cell. Every number links to the sentences behind it.</p></div>
+  <nav><a href="/">Search</a><a href="/semantic">Analyst views</a></nav>
+</header>
+<main id="app"></main>
+<script type="module">
+  import { mount } from '/ui/trends.js';
+  const json = async (u) => { const r = await fetch(u); const d = await r.json(); if (!r.ok) throw new Error(d.error || r.status); return d; };
+  mount(document.getElementById('app'), {
+    mode: 'private',
+    get: (name) => json('/api/view/' + name),
+    evidence: (p) => json('/api/evidence?' + new URLSearchParams(Object.entries(p).filter(([, v]) => v != null && v !== ''))),
+    searchUrl: ({ country, from, to, q }) => '/?' + new URLSearchParams({ q: q || '', country, from, to }),
+  });
+</script>
+</body>
+</html>

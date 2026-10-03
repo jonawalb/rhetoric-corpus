@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Corpus Search (private)</title>
+<style>
+:root { color-scheme: light; --bg:#f2f2ee; --panel:#fbfbf8; --ink:#14201a; --muted:#56625b; --rule:#d3d6cd; --chip:#e7e9e1;
+  --brand:#033303; --accent:#e8753a; --blue:#1b4fd4; --mark:#ffe08a; --bar:#2c6d8a;
+  --body:"IBM Plex Sans","Helvetica Neue",Arial,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace; --display:"Zilla Slab",Georgia,serif; }
+@media (prefers-color-scheme: dark) { :root { color-scheme: dark; --bg:#0c120e; --panel:#121a15; --ink:#dfe7e1; --muted:#9daba2; --rule:#2a382f; --chip:#18221c;
+  --brand:#8fcf9d; --accent:#f08a52; --blue:#72a0ff; --mark:#6b5310; --bar:#63b3d6; } }
+* { box-sizing: border-box; }
+[hidden] { display:none !important; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 var(--body); padding:0 16px 40px; }
+header { max-width:1200px; margin:0 auto; padding:16px 0 10px; border-bottom:3px solid var(--accent); display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:end; }
+h1 { font-family:var(--display); margin:0; font-size:28px; }
+header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
+main { max-width:1200px; margin:14px auto 0; display:flex; flex-direction:column; gap:12px; }
+form { display:grid; gap:8px; background:var(--panel); border:1px solid var(--rule); border-radius:4px; padding:12px; }
+.row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+input[type=search] { flex:1 1 320px; font:inherit; font-size:16px; padding:9px 11px; border:1px solid var(--rule); border-radius:4px; background:var(--bg); color:var(--ink); min-width:0; }
+select, input[type=date] { font:inherit; padding:6px 8px; border:1px solid var(--rule); border-radius:4px; background:var(--bg); color:var(--ink); max-width:100%; }
+label { font-size:12.5px; color:var(--muted); display:flex; gap:5px; align-items:center; }
+button { font:inherit; font-weight:600; padding:8px 14px; border-radius:4px; border:1px solid var(--brand); background:var(--brand); color:var(--bg); cursor:pointer; }
+button.ghost { background:transparent; color:var(--ink); border-color:var(--rule); }
+.help { font-size:12px; color:var(--muted); margin:0; }
+code { font-family:var(--mono); font-size:12px; background:var(--chip); padding:0 3px; border-radius:3px; }
+#summary { font-family:var(--display); font-size:19px; margin:0; }
+#summary small { font-family:var(--mono); font-size:11.5px; color:var(--muted); margin-left:8px; }
+.card { background:var(--panel); border:1px solid var(--rule); border-radius:4px; padding:10px 12px; }
+#hist svg { width:100%; height:130px; display:block; }
+#hist rect.b { fill:var(--bar); cursor:pointer; } #hist rect.b:hover { fill:var(--accent); }
+#hist text { font:10.5px var(--mono); fill:var(--muted); }
+#srcs { display:flex; flex-wrap:wrap; gap:6px; font:11.5px var(--mono); }
+#srcs span { border:1px solid var(--rule); border-radius:9px; padding:1px 8px; }
+ol#res { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+ol#res li { background:var(--panel); border:1px solid var(--rule); border-radius:4px; padding:10px 12px; }
+.meta { font:12px var(--mono); color:var(--muted); display:flex; flex-wrap:wrap; gap:4px 12px; }
+.t { font-weight:600; margin:3px 0; }
+.s { margin:4px 0 0; font-size:13.5px; }
+mark { background:var(--mark); color:inherit; padding:0 1px; border-radius:2px; }
+.u { font-size:12px; overflow-wrap:anywhere; }
+a { color:var(--blue); }
+.err { color:#b3261e; }
+header nav { font-size:13px; }
+.score { font-family:var(--mono); color:var(--accent); }
+.o { font:11px var(--mono); }
+#more { align-self:center; }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Corpus Search</h1><p>Private, local: full texts never leave this machine. <span id="range"></span></p></div>
+  <nav><a href="/">Search</a> · <a href="/semantic">Analyst views (trends, alerts, echoes)</a></nav>
+</header>
+<main>
+  <form id="f" autocomplete="off">
+    <div class="row" role="radiogroup" aria-label="Search mode">
+      <label><input type="radio" name="mode" value="kw" checked> Keyword (exact words)</label>
+      <label><input type="radio" name="mode" value="sem"> Semantic: find statements like this (cross-lingual)</label>
+    </div>
+    <div class="row">
+      <input type="search" id="q" name="q" placeholder='plutonium pit · "pit production" OR 钚芯 · плутониевый сердечник' aria-label="Search terms">
+      <button type="submit">Search</button>
+    </div>
+    <div class="row">
+      <label>Country <select id="country" name="country"><option value="">All</option></select></label>
+      <label>Source <select id="source" name="source"><option value="">All</option></select></label>
+      <label>Language <select id="lang" name="lang"><option value="">All</option></select></label>
+      <label>From <input type="date" id="from" name="from"></label>
+      <label>To <input type="date" id="to" name="to"></label>
+      <label class="kw">Sort <select id="sort" name="sort"><option value="date">Newest</option><option value="rank">Relevance</option></select></label>
+      <label class="kw"><input type="checkbox" id="morph" name="morph" checked> Russian word forms</label>
+      <label class="sem" hidden>Results <select id="k"><option>30</option><option>60</option><option>100</option></select></label>
+    </div>
+    <p class="help sem" hidden>Semantic mode embeds your text (any language) and returns the closest passage of each document in every language, ranked by cosine similarity (multilingual-e5-small). Write a sentence, not keywords: <code>warnings that arms deliveries cross a red line</code>. The first search loads the model and vectors (about 10–20 s). Scores are relative, not calibrated: read the passages.</p>
+    <p class="help kw">No operators = exact phrase. Otherwise: <code>"a phrase"</code> <code>OR</code> <code>AND</code> <code>NOT</code> <code>( )</code> <code>prefix*</code> <code>a NEAR/10 b</code>. Chinese/Korean match substrings. Click a month bar to filter to it.</p>
+  </form>
+  <p id="summary" aria-live="polite"></p>
+  <div class="card" id="hist" hidden></div>
+  <div id="srcs"></div>
+  <ol id="res"></ol>
+  <button class="ghost" id="more" hidden>More results</button>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let state = { offset: 0, last: null };
+
+async function loadMeta() {
+  const m = await (await fetch('/api/meta')).json();
+  for (const [c, n] of m.countries) $('country').insertAdjacentHTML('beforeend', `<option value="${esc(c)}">${esc(c)} (${n.toLocaleString()})</option>`);
+  for (const [s, c, n, a, b] of m.sources) $('source').insertAdjacentHTML('beforeend', `<option value="${esc(s)}">${esc(c)} · ${esc(s)} (${n.toLocaleString()})</option>`);
+  for (const [l, n] of m.langs) $('lang').insertAdjacentHTML('beforeend', `<option value="${esc(l)}">${esc(l)} (${n.toLocaleString()})</option>`);
+  const [a, b, n] = m.range;
+  $('range').textContent = `${n.toLocaleString()} documents, ${a} to ${b}.`;
+}
+
+function params(offset) {
+  const p = new URLSearchParams();
+  for (const k of ['q', 'country', 'source', 'lang', 'from', 'to', 'sort']) if ($(k).value) p.set(k, $(k).value);
+  if ($('morph').checked) p.set('morph', '1');
+  p.set('offset', offset); p.set('limit', 50);
+  return p;
+}
+
+function hist(months) {
+  const box = $('hist');
+  if (!months.length) { box.hidden = true; return; }
+  // Fill empty months so time is continuous.
+  const first = months[0][0], last = months[months.length - 1][0];
+  const map = new Map(months.map((m) => [m[0], m]));
+  const all = [];
+  let [y, mo] = first.split('-').map(Number);
+  while (true) { const k = `${y}-${String(mo).padStart(2, '0')}`; all.push(map.get(k) || [k, 0, 0]); if (k === last || all.length > 400) break; mo++; if (mo > 12) { mo = 1; y++; } }
+  const W = 1000, H = 130, pad = 22, bw = (W - 10) / all.length;
+  const max = Math.max(...all.map((m) => m[1]));
+  let s = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Matching documents per month">`;
+  all.forEach((m, i) => {
+    const h = max ? (H - pad - 6) * m[1] / max : 0;
+    s += `<rect class="b" data-m="${m[0]}" x="${5 + i * bw}" y="${H - pad - h}" width="${Math.max(1, bw - 1)}" height="${h}"><title>${m[0]}: ${m[1]} documents, ${m[2]} hits</title></rect>`;
+  });
+  const step = Math.ceil(all.length / 10);
+  all.forEach((m, i) => { if (i % step === 0) s += `<text x="${5 + i * bw}" y="${H - 6}">${m[0]}</text>`; });
+  s += `<text x="5" y="12">max ${max} documents/month</text></svg>`;
+  box.innerHTML = s; box.hidden = false;
+  box.querySelectorAll('rect.b').forEach((r) => r.addEventListener('click', () => {
+    const [yy, mm] = r.dataset.m.split('-').map(Number);
+    $('from').value = `${r.dataset.m}-01`;
+    $('to').value = new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10);
+    run(0);
+  }));
+}
+
+function render(d, append) {
+  if (!append) {
+    const hits = d.total_hits == null ? '' : `${d.total_hits.toLocaleString()} matches in `;
+    $('summary').innerHTML = `${hits}${d.total_docs.toLocaleString()} documents<small>${d.ms} ms · ${esc(d.table)}${d.morph ? ' · ' + esc(d.morph) : ''}${d.note ? ' · ' + esc(d.note) : ''}</small>`;
+    hist(d.months);
+    $('srcs').innerHTML = d.by_source.map(([s, n, h]) => `<span>${esc(s)}: ${n}</span>`).join('');
+    $('res').innerHTML = '';
+  }
+  const html = d.results.map((r) => `<li>
+    <div class="meta"><span>${esc(r.date)}</span><span>${esc(r.country)} · ${esc(r.source)} · ${esc(r.org || '')}</span><span>${esc(r.lang)}</span>${r.speaker ? `<span>${esc(r.speaker)}</span>` : ''}<span>${r.hits} hit${r.hits === 1 ? '' : 's'}</span></div>
+    <div class="t">${esc(r.title)}</div>
+    ${r.snippets.map(([a, h, b]) => `<p class="s">${esc(a)}<mark>${esc(h)}</mark>${esc(b)}</p>`).join('')}
+    <div class="u"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a></div></li>`).join('');
+  $('res').insertAdjacentHTML('beforeend', html);
+  state.offset = d.offset + d.results.length;
+  $('more').hidden = state.offset >= d.total_docs;
+}
+
+const semMode = () => document.querySelector('input[name=mode]:checked').value === 'sem';
+function setMode() {
+  const sem = semMode();
+  document.querySelectorAll('.kw').forEach((e) => { e.hidden = sem; });
+  document.querySelectorAll('.sem').forEach((e) => { e.hidden = !sem; });
+}
+document.querySelectorAll('input[name=mode]').forEach((r) => r.addEventListener('change', setMode));
+
+async function runSem() {
+  const p = new URLSearchParams();
+  for (const k of ['q', 'country', 'source', 'lang', 'from', 'to']) if ($(k).value) p.set(k, $(k).value);
+  p.set('k', $('k').value);
+  history.replaceState(null, '', '?mode=sem&' + p.toString());
+  $('summary').textContent = 'Searching (the first semantic search loads the model)…';
+  $('hist').hidden = true; $('srcs').innerHTML = ''; $('res').innerHTML = ''; $('more').hidden = true;
+  const r = await fetch('/api/semsearch?' + p);
+  const d = await r.json();
+  if (d.error) { $('summary').innerHTML = `<span class="err">${esc(d.error)}</span>`; return; }
+  $('summary').innerHTML = `${d.results.length} closest documents<small>${d.ms} ms · ${esc(d.note)}</small>`;
+  $('res').innerHTML = d.results.map((r) => `<li>
+    <div class="meta"><span class="score">${r.score.toFixed(3)}</span><span>${esc(r.date)}</span><span>${esc(r.country)} · ${esc(r.source)}</span><span class="o">${esc(r.outlet)}</span><span>${esc(r.lang)}</span></div>
+    <div class="t">${esc(r.title)}</div><p class="s">${esc(r.passage)}</p>
+    <div class="u"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a></div></li>`).join('');
+}
+
+async function run(offset) {
+  if (!$('q').value.trim()) return;
+  if (semMode()) return runSem();
+  const p = params(offset);
+  history.replaceState(null, '', '?' + p.toString());
+  $('summary').textContent = 'Searching…';
+  const r = await fetch('/api/search?' + p);
+  const d = await r.json();
+  if (d.error) { $('summary').innerHTML = `<span class="err">${esc(d.error)}</span>`; return; }
+  render(d, offset > 0);
+}
+
+$('f').addEventListener('submit', (e) => { e.preventDefault(); run(0); });
+$('more').addEventListener('click', () => run(state.offset));
+loadMeta().then(() => {
+  const u = new URLSearchParams(location.search);
+  for (const k of ['q', 'country', 'source', 'lang', 'from', 'to', 'sort']) if (u.get(k)) $(k).value = u.get(k);
+  if (u.has('q') && !u.has('morph')) $('morph').checked = false;
+  if (u.get('mode') === 'sem') { document.querySelector('input[value=sem]').checked = true; if (u.get('k')) $('k').value = u.get('k'); }
+  setMode();
+  if (u.get('q')) run(0);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+# Plutonium-pit test (brief 2026-10-02). One query per line; blank lines and # comments ignored.
+# Optional "label | query" form. Cyrillic queries are run with Russian word-form expansion (--morph).
+# Query syntax: see scripts/searchlib.py (no operators = exact phrase).
+
+## RU
+плутониевый сердечник
+плутониевое ядро
+ядерный сердечник
+питы (as in "pits") | питы OR питов OR питами OR питах OR "«питы»"
+Лос-Аламос | Лос-Аламос*
+Саванна-Ривер
+W87-1
+Роки-Флэтс
+NNSA
+Национальное управление по ядерной безопасности
+ядерный арсенал США
+модернизация ядерного арсенала
+разучились (any context) | разучились
+разучились near bombs/nuclear | разучились NEAR/15 бомб* OR разучились NEAR/15 ядерн*
+деградация ядерной инфраструктуры
+оружейный плутоний
+соглашение по утилизации плутония
+
+## EN
+plutonium pit(s) | "plutonium pit"*
+plutonium core(s) | "plutonium core"*
+pit production
+war reserve pit
+PF-4
+diamond stamp
+Los Alamos (EN) | "Los Alamos"
+Savannah River (EN) | "Savannah River"
+Rocky Flats (EN) | "Rocky Flats"
+National Nuclear Security Administration (EN) | "National Nuclear Security Administration"
+weapons-grade plutonium (EN) | "weapons-grade plutonium" OR "weapons grade plutonium"
+Plutonium disposition agreement (EN) | "Plutonium Management and Disposition Agreement" OR "plutonium disposition"
+
+## ZH
+钚芯
+钚弹芯
+洛斯阿拉莫斯
+
+## FA
+هسته پلوتونیوم
+لس آلاموس

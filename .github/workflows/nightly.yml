@@ -1,0 +1,166 @@
+# Nightly collection + publish. State lives in the PRIVATE Hugging Face dataset wallabee1/rhetoric-corpus-store
+# (scripts/store_sync.py); the public site data goes, sealed, to wallabee1/rhetoric-search-data. Nothing collected is
+# written to this (public) repository or to the public Actions log: collector output goes to logs/ci/ in the store.
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 7 * * *"          # 07:00 UTC daily; Sundays also run the weekly maintenance steps
+  workflow_dispatch:
+    inputs:
+      collect_minutes:
+        description: "Global collection budget (minutes)"
+        default: "225"
+      skip_chains:
+        description: "Comma list of collector chains to skip (see scripts/ci_collect.py --list)"
+        default: ""
+      publish:
+        description: "Upload the sealed search + trends data to the public HF data repo"
+        type: boolean
+        default: true
+      weekly:
+        description: "Also run the weekly steps (full semantic pass, squash Hub history)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: rhetoric-corpus-store    # one writer of the store at a time; a queued run waits, never overlaps
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write                  # only to keep the schedule enabled (public repos idle for 60 days lose it)
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      RHETORIC_TIER_PASSWORD: ${{ secrets.RHETORIC_TIER_PASSWORD }}
+      SEM_DEVICE: cpu
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      TRANSFORMERS_VERBOSITY: error
+      TOKENIZERS_PARALLELISM: "false"
+      PYTHONUNBUFFERED: "1"
+      COLLECT_MINUTES: ${{ inputs.collect_minutes || '225' }}
+      COLLECT_SKIP: ${{ inputs.skip_chains || '' }}
+    steps:
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+                      /usr/local/share/boost /usr/share/swift /usr/local/share/powershell /usr/local/lib/node_modules \
+                      /opt/microsoft /opt/google /usr/lib/jvm || true
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h / | tail -1
+
+      - uses: actions/checkout@v4
+
+      - name: Weekly?
+        id: when
+        run: |
+          if [ "$(date -u +%u)" = 7 ] || [ "${{ inputs.weekly }}" = true ]; then echo "weekly=true" >> "$GITHUB_OUTPUT"; else echo "weekly=false" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install (CPU-only torch)
+        run: uv sync --frozen --no-dev --python 3.13
+
+      - name: Restore model cache
+        uses: actions/cache/restore@v4
+        with:
+          path: index/semantic/models
+          key: sem-models-${{ hashFiles('scripts/semantic/config.py') }}
+          restore-keys: sem-models-
+
+      - name: Pull store
+        id: pull
+        timeout-minutes: 40
+        run: uv run --no-sync python scripts/store_sync.py pull
+
+      - name: Collect
+        id: collect
+        if: steps.pull.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 245
+        run: uv run --no-sync python scripts/ci_collect.py --budget $(( COLLECT_MINUTES * 60 ))
+
+      - name: Build index
+        id: index
+        if: always() && steps.pull.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 30
+        run: uv run --no-sync python scripts/build_index.py 2>&1 | tail -5
+
+      - name: Semantic layer (incremental)
+        id: semantic
+        if: always() && steps.index.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 100
+        run: |
+          if [ "${{ steps.when.outputs.weekly }}" = true ]; then B=""; else B="--budget 2400"; fi
+          uv run --no-sync python -m scripts.semantic.run $B 2>&1 | sed '/Loading weights/d' | tail -40
+
+      - name: Trends data
+        id: trends
+        if: always() && steps.semantic.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 15
+        run: uv run --no-sync python publish/build_trends.py
+
+      - name: Sealed site data to Hugging Face
+        id: publish
+        if: always() && steps.trends.outcome == 'success' && (github.event_name == 'schedule' || inputs.publish)
+        continue-on-error: true
+        timeout-minutes: 45
+        run: uv run --no-sync python publish/build_hf_data.py --trends staging/trends --upload 2>&1 | tail -15
+
+      - name: Push store (always, so collected documents are never lost)
+        id: push
+        if: always() && steps.pull.outcome == 'success'
+        timeout-minutes: 40
+        run: |
+          for i in 1 2 3; do
+            uv run --no-sync python scripts/store_sync.py push && exit 0
+            echo "push attempt $i failed; retrying in 60 s"; sleep 60
+          done
+          exit 1
+
+      - name: Save model cache
+        if: always() && steps.semantic.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: index/semantic/models
+          key: sem-models-${{ hashFiles('scripts/semantic/config.py') }}-${{ github.run_id }}
+
+      - name: Weekly maintenance (squash Hub history)
+        if: always() && steps.push.outcome == 'success' && steps.when.outputs.weekly == 'true'
+        continue-on-error: true
+        run: |
+          uv run --no-sync python scripts/store_sync.py squash
+          uv run --no-sync python -c "from huggingface_hub import HfApi; HfApi().super_squash_history('wallabee1/rhetoric-search-data', repo_type='dataset', commit_message='squash history')"
+
+      - name: Keep the schedule enabled
+        if: always() && github.event_name == 'schedule'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/nightly.yml/enable"
+
+      - name: Summary
+        if: always()
+        env:
+          OUTCOMES: >-
+            pull=${{ steps.pull.outcome }} collect=${{ steps.collect.outcome }} index=${{ steps.index.outcome }}
+            semantic=${{ steps.semantic.outcome }} trends=${{ steps.trends.outcome }} publish=${{ steps.publish.outcome }}
+            push=${{ steps.push.outcome }}
+        run: |
+          {
+            echo "### Steps"; echo; for o in $OUTCOMES; do echo "- ${o%%=*}: **${o#*=}**"; done; echo
+            echo "### Disk"; echo; echo '```'; df -h / | tail -1
+            du -sh .venv docs state index/corpus.sqlite index/semantic index/semantic/models staging 2>/dev/null; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "${{ steps.push.outcome }}" = success ] || { echo "store push did not succeed"; exit 1; }
