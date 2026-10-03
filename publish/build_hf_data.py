@@ -152,11 +152,14 @@ def build_doc_shards(con: sqlite3.Connection, out: Path, wayback: Dict[str, str]
 
 
 def assert_no_media_text(docs_dir: Path, con: sqlite3.Connection) -> int:
-    """Fail unless every document in docs_dir is official in the corpus index, carries only DOC_KEYS, and no
-    document's text equals any state media / media / commentary text. Returns the number of documents checked."""
+    """Fail unless every document in docs_dir is official in the corpus index, carries only DOC_KEYS, and its text
+    is exactly that official document's own text in the index (so no media text can ride under an official id).
+    Official texts that media reprinted verbatim (e.g. BelTA republishing a president.gov.by speech) are allowed
+    and reported. Returns the number of documents checked."""
     errors: List[str] = []
     ids: List[int] = []
     text_hash: Dict[str, int] = {}
+    shipped: Dict[int, str] = {}
     for p in sorted(docs_dir.glob("*.json.gz")):
         if p.name == "index.json.gz":
             continue
@@ -164,17 +167,28 @@ def assert_no_media_text(docs_dir: Path, con: sqlite3.Connection) -> int:
             ids.append(int(k))
             if set(rec) - DOC_KEYS:
                 errors.append(f"{p.name}:{k}: unexpected fields {sorted(set(rec) - DOC_KEYS)}")
+            shipped[int(k)] = hashlib.sha1(rec.get("text", "").encode()).hexdigest()
             if len(rec.get("text", "")) >= 40:
-                text_hash[hashlib.sha1(rec["text"].encode()).hexdigest()] = int(k)
+                text_hash[shipped[int(k)]] = int(k)
     outlet: Dict[int, str] = {}
+    own: Dict[int, str] = {}
     for i in range(0, len(ids), 900):
         chunk = ids[i:i + 900]
-        outlet.update(con.execute(f"SELECT rowid, outlet FROM docs WHERE rowid IN ({','.join('?' * len(chunk))})", chunk))
+        for rowid, out_, text in con.execute(f"SELECT rowid, outlet, text FROM docs WHERE rowid IN "
+                                             f"({','.join('?' * len(chunk))})", chunk):
+            outlet[rowid] = out_
+            own[rowid] = hashlib.sha1((text or "").encode()).hexdigest()
     errors += [f"doc {r}: outlet {outlet.get(r)!r} is not official" for r in ids if outlet.get(r) != "official"]
+    errors += [f"doc {r}: shipped text is not the official document's own text" for r in ids
+               if outlet.get(r) == "official" and shipped[r] != own.get(r)]
+    reprints = []
     for rowid, text in con.execute("SELECT rowid, text FROM docs WHERE outlet != 'official' AND length(text) >= 40"):
         h = hashlib.sha1(text.encode()).hexdigest()
-        if h in text_hash:
-            errors.append(f"doc {text_hash[h]}: text identical to media doc {rowid}")
+        if h in text_hash and shipped[text_hash[h]] == own.get(text_hash[h]):
+            reprints.append(f"doc {text_hash[h]} (official) reprinted verbatim by media doc {rowid}")
+    if reprints:
+        print(f"note: {len(reprints)} official document(s) reprinted verbatim by media, shipped as official:\n  "
+              + "\n  ".join(reprints[:20]))
     if errors:
         raise MediaTextError(f"{len(errors)} problem(s) in the full-document shards:\n" + "\n".join(errors[:20]))
     return len(ids)

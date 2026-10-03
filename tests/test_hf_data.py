@@ -84,8 +84,17 @@ def test_media_guard_rejects_a_media_document(tmp_path):
 def test_media_guard_rejects_media_text_under_an_official_id(tmp_path):
     con = make_db(tmp_path / "c.sqlite")
     _write_shard(tmp_path / "docs", {"1": _rec(MEDIA_TEXT)})
-    with pytest.raises(H.MediaTextError, match="identical to media doc 2"):
+    with pytest.raises(H.MediaTextError, match="doc 1: shipped text is not the official document's own text"):
         H.assert_no_media_text(tmp_path / "docs", con)
+
+
+def test_media_guard_allows_official_text_that_media_reprinted_verbatim(tmp_path, capsys):
+    con = make_db(tmp_path / "c.sqlite")
+    speech = "Official New Year address text, published on the president's own site. " * 3
+    con.execute("UPDATE docs SET text = ? WHERE rowid IN (3, 4)", (speech,))  # doc 4 (media) reprints doc 3
+    _write_shard(tmp_path / "docs", {"3": _rec(speech)})
+    assert H.assert_no_media_text(tmp_path / "docs", con) == 1
+    assert "doc 3 (official) reprinted verbatim by media doc 4" in capsys.readouterr().out
 
 
 def test_media_guard_rejects_extra_fields(tmp_path):
