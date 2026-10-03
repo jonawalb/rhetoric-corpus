@@ -125,9 +125,34 @@ def diff(local: Dict[str, dict], remote: Dict[str, dict]) -> Tuple[List[str], Li
     return changed, missing
 
 
-def _download(repo: str, p: str) -> Path:
+def _download(repo: str, p: str, tries: int = 3) -> Path:
     from huggingface_hub import hf_hub_download
-    return Path(hf_hub_download(repo, p, repo_type="dataset", local_dir=ROOT / ".store_dl"))
+    for i in range(tries):
+        try:
+            return Path(hf_hub_download(repo, p, repo_type="dataset", local_dir=ROOT / ".store_dl",
+                                        force_download=i > 0))
+        except (RuntimeError, OSError) as e:  # e.g. a transient Xet "File size mismatch"
+            if i == tries - 1:
+                raise
+            logger.warning("%s: download failed (%s); retrying", p, e)
+            time.sleep(5 * (i + 1))
+    raise AssertionError("unreachable")
+
+
+def _snapshot(rel: str, dest_root: Path) -> Path:
+    """Copy ROOT/rel to dest_root/rel so the bytes uploaded (and hashed) cannot change mid-upload while collectors
+    keep appending. docs/*.jsonl are copied under the collectors' write lock (as lib.write_docs)."""
+    import fcntl
+    import shutil
+    src, dst = ROOT / rel, dest_root / rel
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if rel.startswith("docs/") and rel.endswith(".jsonl"):
+        with open(src.with_suffix(".lock"), "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            shutil.copyfile(src, dst)
+    else:
+        shutil.copyfile(src, dst)
+    return dst
 
 
 def pull(repo: str, only: List[str] | None, workers: int = 8) -> dict:
@@ -200,7 +225,7 @@ def merge_jsonl(local: Path, stored: Path) -> int:
 
 
 def push(repo: str, dry_run: bool = False, allow_shrink: bool = False, only: List[str] | None = None,
-         batch: int = 100) -> dict:
+         batch: int = 100, no_merge: bool = False) -> dict:
     """Upload changed files. A docs file that someone else changed in the store since our pull (or, without a pull
     this run, any docs file that differs) is first merged by document id, so concurrent writers never lose lines."""
     from huggingface_hub import CommitOperationAdd, CommitOperationDelete
@@ -212,7 +237,7 @@ def push(repo: str, dry_run: bool = False, allow_shrink: bool = False, only: Lis
     pulled = json.loads(MARKER.read_text()).get("manifest") if MARKER.exists() else None
     changed, missing = diff(local, remote)
     merged = 0
-    for p in [p for p in changed if p.startswith(APPEND_ONLY) and p in remote]:
+    for p in [p for p in changed if p.startswith(APPEND_ONLY) and p in remote and not no_merge]:
         if pulled is not None and pulled.get(p, {}).get("sha256") == remote[p]["sha256"]:
             continue  # nobody else touched it: our copy extends the stored one
         if dry_run:
@@ -241,11 +266,22 @@ def push(repo: str, dry_run: bool = False, allow_shrink: bool = False, only: Lis
     if not hf.repo_info(repo, repo_type="dataset").private:
         raise SystemExit(f"{repo} is not private; refusing to push")
     t0 = time.time()
-    for i in range(0, len(changed), batch):
-        part = changed[i:i + batch]
-        hf.create_commit(repo, repo_type="dataset", commit_message=f"store: {len(part)} files",
-                         operations=[CommitOperationAdd(p, str(ROOT / p)) for p in part])
-        logger.info("  uploaded %d/%d", min(i + batch, len(changed)), len(changed))
+    import shutil
+    import tempfile
+    snap_root = Path(tempfile.mkdtemp(prefix="store_snap_", dir=ROOT))
+    try:
+        for i in range(0, len(changed), batch):
+            part = changed[i:i + batch]
+            snaps = {p: _snapshot(p, snap_root) for p in part}
+            for p, f in snaps.items():  # the manifest describes exactly the bytes uploaded
+                new_manifest[p] = local[p] = {"sha256": sha256(f), "bytes": f.stat().st_size}
+            hf.create_commit(repo, repo_type="dataset", commit_message=f"store: {len(part)} files",
+                             operations=[CommitOperationAdd(p, str(f)) for p, f in snaps.items()])
+            for f in snaps.values():
+                f.unlink()
+            logger.info("  uploaded %d/%d", min(i + batch, len(changed)), len(changed))
+    finally:
+        shutil.rmtree(snap_root, ignore_errors=True)
     ops = [CommitOperationDelete(p) for p in deletes]
     ops += [CommitOperationAdd("README.md", CARD.encode()),
             CommitOperationAdd(MANIFEST, json.dumps({"updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -283,11 +319,15 @@ def main() -> None:
     ap.add_argument("--only", help="comma list of top folders (docs,state,raw,index/semantic,reports,logs/ci)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--allow-shrink", action="store_true", help="push docs files even if smaller than the stored copy")
+    ap.add_argument("--no-merge", action="store_true",
+                    help="push: upload local docs files as-is instead of merging with the stored copy (only when this "
+                         "checkout is the sole writer since the last push, e.g. to repair a bad stored file)")
     a = ap.parse_args()
     if a.cmd == "pull":
         print(json.dumps(pull(a.repo, a.only.split(",") if a.only else None)))
     elif a.cmd == "push":
-        print(json.dumps(push(a.repo, a.dry_run, a.allow_shrink, a.only.split(",") if a.only else None)))
+        print(json.dumps(push(a.repo, a.dry_run, a.allow_shrink, a.only.split(",") if a.only else None,
+                              no_merge=a.no_merge)))
     elif a.cmd == "verify":
         rep = verify(a.repo)
         sys.exit(1 if rep["differ"] else 0)
