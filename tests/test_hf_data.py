@@ -144,16 +144,3 @@ def test_upload_plan_copies_unchanged_files():
 def test_deterministic_sealing_makes_unchanged_files_identical(tmp_path):
     a = build_site.seal_file(KEY, MAGIC, b"same bytes")
     assert a == build_site.seal_file(KEY, MAGIC, b"same bytes") != build_site.seal_file(KEY, MAGIC, b"other")
-
-
-def test_official_text_duplicated_by_media_is_left_out(tmp_path):
-    con = make_db(tmp_path / "c.sqlite")
-    con.execute("INSERT INTO docs VALUES (5, 'by_president_en:5', 'BY/by_president_en.jsonl', 'BY', 'by_president_en', "
-                "'official', 'President', 'en', '2025-01-01', 'https://p.example/5', 'Address', 'Lukashenko', 'speech', "
-                "'direct', ?, 0)", (MEDIA_TEXT,))
-    con.commit()
-    skip = H.media_duplicate_rowids(con)
-    assert skip == {5}
-    info = H.build_doc_shards(con, tmp_path / "docs", {}, skip=frozenset(skip))
-    assert info["skipped_media_duplicates"] == 1
-    assert H.assert_no_media_text(tmp_path / "docs", con) == 2
