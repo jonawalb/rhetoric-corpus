@@ -9,9 +9,8 @@ pushes the store back. The store holds everything a run needs to continue where 
   index/semantic/**              semantic store for incremental runs (models excluded: they come from the Hub)
   reports/**                     briefs and semantic reports (they quote texts, so they live here, not in git)
   logs/ci/<date>/                collector logs of the last 14 CI runs (private: they name URLs and titles)
-
-index/corpus.sqlite is NOT stored: build_index.py rebuilds it from docs/ in a few minutes, and the semantic store is
-keyed by document id, not corpus rowid.
+  index/corpus.sqlite            search index: stored so build_index.py stays incremental and corpus rowids stay stable
+                                 (a rebuild renumbers every document, and the semantic store then re-tags all of them)
 
 manifest.json (repo root) lists every stored file with its SHA-256 and size. `pull` downloads only files whose
 local hash differs; `push` uploads only files whose hash differs from the remote manifest, then the new manifest in
@@ -53,7 +52,7 @@ MANIFEST = "manifest.json"
 MARKER = ROOT / ".store_pulled"
 RAW_DIRS = ("by_president", "ir_presstv", "kp_rodong_en", "ir_khamenei_en")
 INCLUDE = ["docs/*/*.jsonl", "state/*.json", "state/*.cookies", *[f"raw/{d}/*" for d in RAW_DIRS],
-           "index/semantic/*", "index/semantic/**/*", "reports/*", "reports/**/*", "logs/ci/*"]
+           "index/corpus.sqlite", "index/semantic/*", "index/semantic/**/*", "reports/*", "reports/**/*", "logs/ci/*"]
 EXCLUDE = ["index/semantic/models/*", "*.sqlite-wal", "*.sqlite-shm", "*.tmp", "*.lock", "*/.*", ".*"]
 DELETABLE = ("index/semantic/", "logs/ci/")
 APPEND_ONLY = ("docs/",)
@@ -82,7 +81,7 @@ def sha256(path: Path) -> str:
 
 def checkpoint_sqlite(root: Path) -> None:
     """Fold WAL files into their databases so the stored .sqlite is complete on its own."""
-    for db in (root / "index" / "semantic").glob("*.sqlite"):
+    for db in [*(root / "index").glob("*.sqlite"), *(root / "index" / "semantic").glob("*.sqlite")]:
         try:
             con = sqlite3.connect(db, timeout=60)
             con.execute("PRAGMA wal_checkpoint(TRUNCATE)")

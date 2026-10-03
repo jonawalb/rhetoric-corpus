@@ -17,9 +17,9 @@ import store_sync  # noqa: E402
 
 def test_store_selection():
     yes = ["docs/RU/kremlin_en.jsonl", "state/ru_mid.json", "state/by_mfa_en.cookies", "raw/ir_presstv/sitemap-2023-05.xml",
-           "index/semantic/semantic.sqlite", "index/semantic/emb/p_000000001.npy", "index/semantic/aggregates/alerts.json",
+           "index/corpus.sqlite", "index/semantic/semantic.sqlite", "index/semantic/emb/p_000000001.npy", "index/semantic/aggregates/alerts.json",
            "reports/briefs/brief-2026-10-03.md", "logs/ci/2026-10-03/ru_mid.log"]
-    no = ["index/corpus.sqlite", "index/semantic/semantic.sqlite-wal", "index/semantic/models/blobs/abc",
+    no = ["index/corpus.sqlite-wal", "index/semantic/semantic.sqlite-wal", "index/semantic/models/blobs/abc",
           "state/ru_mid.log", "state/.slot_web.archive.org", "state/ru_mid.tmp", "docs/RU/kremlin_en.lock", "raw/ria_ru/1.html",
           "logs/nightly_publish.log", "staging/hf/data/current.json", "release/0.1.0/README.md"]
     assert [p for p in yes if not store_sync.wanted(p)] == []
