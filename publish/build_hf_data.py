@@ -90,9 +90,12 @@ def normalize_wayback(url: str, w: str | None) -> str:
     return f"https://web.archive.org/web/{url}" if url else ""
 
 
-def load_wayback(corpus: Path, files: Iterable[str]) -> Dict[str, str]:
-    """doc id -> stored `wayback` field, read from docs/<file>.jsonl (only lines that have one are parsed)."""
+def load_wayback(corpus: Path, files: Iterable[str], con: sqlite3.Connection | None = None) -> Dict[str, str]:
+    """doc id -> stored `wayback` field: from the index's `wayback` column (kept since the segmented store, so sealed
+    documents need no JSONL file here), plus any docs/<file>.jsonl still present locally."""
     out: Dict[str, str] = {}
+    if con is not None and "wayback" in {r[1] for r in con.execute("PRAGMA table_info(docs)")}:
+        out.update(con.execute("SELECT id, wayback FROM docs WHERE wayback IS NOT NULL AND outlet = 'official'"))
     for f in sorted(set(files)):
         p = corpus / "docs" / f
         if not p.exists():
@@ -332,7 +335,7 @@ def build(a: argparse.Namespace, key: bytes, magic: bytes) -> str:
                    check=True)
     con = sqlite3.connect(f"file:{a.corpus / 'index' / 'corpus.sqlite'}?mode=ro", uri=True)
     files = [f for (f,) in con.execute("SELECT DISTINCT file FROM docs WHERE outlet = 'official'")]
-    info = build_doc_shards(con, plain / "docs", load_wayback(a.corpus, files), a.doc_shard_kb)
+    info = build_doc_shards(con, plain / "docs", load_wayback(a.corpus, files, con), a.doc_shard_kb)
     n = assert_no_media_text(plain / "docs", con)
     print(f"full documents: {json.dumps(info)}; media guard passed on {n} documents")
     add_docs_to_meta(plain, info)

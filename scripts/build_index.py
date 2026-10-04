@@ -1,4 +1,4 @@
-"""Build or update index/corpus.sqlite from docs/**/*.jsonl.
+"""Build or update index/corpus.sqlite from the sealed parts (docs-parts/**/*.jsonl.gz) and docs/**/*.jsonl.
 
 Tables
   files      one row per JSONL file: size, mtime, bytes indexed, hash of the indexed prefix.
@@ -9,9 +9,14 @@ Tables
   sentences  (doc, idx, text): every document split into sentences of at most 300 characters (snippets,
              public build).
 
-Incremental: a file whose size and mtime are unchanged is skipped; a file that only grew (the indexed
-prefix hashes the same) has just its new lines added; any other change re-indexes that file. Files that
-disappeared are removed. --rebuild starts from scratch.
+Incremental: a part (immutable, scripts/segments.py) is indexed once and recorded in `files`; it is then never
+read again, so it need not be present locally (the nightly job downloads only parts not yet in `files`). An active
+docs file whose size and mtime are unchanged is skipped; one that only grew (the indexed prefix hashes the same) has
+just its new lines added; any other change re-indexes that file. Re-indexing or removing an active file deletes only
+its documents that are NOT sealed (state/ids/<CC>/<source>.ids): sealed documents moved into a part when the seal cut
+them from the file, so they keep their rows and rowids. Documents also keep the `sample` and `wayback` fields
+(filled in later for an existing row when a part repeats it), so publish/semantic steps need no JSONL files.
+--rebuild starts from scratch (it needs every part locally: store_sync.py pull --only docs-parts).
 
 Usage: uv run python scripts/build_index.py [--rebuild] [--trigram-all]
 """
@@ -28,6 +33,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import segments  # noqa: E402
 from textnorm import CJK_LANGS, norm, sentences  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +47,7 @@ CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, size INTEGER, mtime REAL
 CREATE TABLE IF NOT EXISTS docs(
   rowid INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, file TEXT NOT NULL,
   country TEXT, source TEXT, outlet TEXT, org TEXT, lang TEXT, date TEXT, url TEXT, title TEXT, speaker TEXT,
-  kind TEXT, via TEXT, text TEXT, nchars INTEGER);
+  kind TEXT, via TEXT, text TEXT, nchars INTEGER, sample TEXT, wayback TEXT);
 CREATE INDEX IF NOT EXISTS docs_file ON docs(file);
 CREATE INDEX IF NOT EXISTS docs_filter ON docs(country, source, date);
 CREATE INDEX IF NOT EXISTS docs_date ON docs(date);
@@ -61,6 +67,10 @@ def connect(path: Path = DB) -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=NORMAL")
     con.executescript(SCHEMA)
+    cols = {r[1] for r in con.execute("PRAGMA table_info(docs)")}
+    for c in ("sample", "wayback"):  # added with the segmented store (2026-10-04)
+        if c not in cols:
+            con.execute(f"ALTER TABLE docs ADD COLUMN {c} TEXT")
     return con
 
 
@@ -75,6 +85,19 @@ def _prefix_sha(path: Path, n: int) -> str:
             h.update(chunk)
             left -= len(chunk)
     return h.hexdigest()
+
+
+def _iter_part(path: Path) -> Iterable[Dict]:
+    for line in segments.open_lines(path):
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError as e:
+            logger.warning("%s: bad JSON line skipped (%s)", path.name, e)
+
+
+def _extra(r: Dict, k: str) -> Optional[str]:
+    v = r.get(k)
+    return None if v in (None, "") else str(v)
 
 
 def _iter_lines(path: Path, start: int) -> Tuple[List[Dict], int]:
@@ -125,12 +148,16 @@ def _insert_docs(con: sqlite3.Connection, rel: str, rows: Iterable[Dict]) -> Tup
         if not r.get("id") or not r.get("text"):
             continue
         vals = [r.get(k) for k in META]
+        sample, wayback = _extra(r, "sample"), _extra(r, "wayback")
         cur = con.execute(
             "INSERT OR IGNORE INTO docs(id, country, source, outlet, org, lang, date, url, title, speaker, kind, via, file,"
-            " text, nchars) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (*vals, rel, r["text"], len(r["text"])))
+            " text, nchars, sample, wayback) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (*vals, rel, r["text"], len(r["text"]), sample, wayback))
         if cur.rowcount == 0:
             dup += 1
+            if sample or wayback:  # backfill the fields for rows indexed before they were kept
+                con.execute("UPDATE docs SET sample=coalesce(sample, ?), wayback=coalesce(wayback, ?) WHERE id=?"
+                            " AND (sample IS NULL OR wayback IS NULL)", (sample, wayback, r["id"]))
             continue
         rowid = cur.lastrowid
         title, text = norm(r.get("title") or ""), norm(r["text"])
@@ -143,10 +170,38 @@ def _insert_docs(con: sqlite3.Connection, rel: str, rows: Iterable[Dict]) -> Tup
     return added, dup
 
 
-def update(con: sqlite3.Connection, docs_dir: Path = DOCS) -> Dict[str, int]:
+def _delete_unsealed(con: sqlite3.Connection, rel: str, root: Path) -> int:
+    """Delete the documents indexed from active file `rel` ('<CC>/<source>.jsonl') that are not sealed."""
+    cc, name = rel.split("/", 1)
+    sealed = segments.read_ids(segments.ids_file(root, cc, name[:-len(".jsonl")]))
+    rowids = [rid for rid, did in con.execute("SELECT rowid, id FROM docs WHERE file=?", (rel,)) if did not in sealed]
+    n = 0
+    for i in range(0, len(rowids), 500):
+        chunk = rowids[i:i + 500]
+        n += _delete_docs(con, f"rowid IN ({','.join('?' * len(chunk))})", tuple(chunk))
+    return n
+
+
+def update(con: sqlite3.Connection, docs_dir: Path = DOCS, root: Optional[Path] = None) -> Dict[str, int]:
+    """root: checkout holding docs-parts/ and state/ids/ (default: the parent of docs_dir)."""
+    root = docs_dir.parent if root is None else root
     stats = {"files_skipped": 0, "files_appended": 0, "files_reindexed": 0, "files_removed": 0,
-             "docs_added": 0, "docs_removed": 0, "dup_ids": 0}
+             "docs_added": 0, "docs_removed": 0, "dup_ids": 0, "parts_indexed": 0, "parts_known": 0}
     known = {r[0]: r for r in con.execute("SELECT path, size, mtime, done, prefix_sha FROM files")}
+    for path in segments.part_files(root):  # immutable: once in `files`, never read again
+        rel = path.relative_to(root).as_posix()
+        if rel in known:
+            stats["parts_known"] += 1
+            continue
+        added, dup = _insert_docs(con, rel, _iter_part(path))
+        st = path.stat()
+        con.execute("INSERT OR REPLACE INTO files(path, size, mtime, done, prefix_sha, ndocs) VALUES(?,?,?,?,?,?)",
+                    (rel, st.st_size, st.st_mtime, st.st_size, _prefix_sha(path, st.st_size), added))
+        con.commit()
+        stats["parts_indexed"] += 1
+        stats["docs_added"] += added
+        stats["dup_ids"] += dup
+        logger.info("%s: +%d docs (%d already indexed)", rel, added, dup)
     present = set()
     for path in sorted(docs_dir.glob("*/*.jsonl")):
         rel = str(path.relative_to(docs_dir))
@@ -162,7 +217,7 @@ def update(con: sqlite3.Connection, docs_dir: Path = DOCS) -> Dict[str, int]:
             stats["files_appended"] += 1
         else:
             if prev:
-                stats["docs_removed"] += _delete_docs(con, "file=?", (rel,))
+                stats["docs_removed"] += _delete_unsealed(con, rel, root)
             stats["files_reindexed"] += 1
         rows, done = _iter_lines(path, start)
         added, dup = _insert_docs(con, rel, rows)
@@ -174,7 +229,9 @@ def update(con: sqlite3.Connection, docs_dir: Path = DOCS) -> Dict[str, int]:
         con.commit()
         logger.info("%s: +%d docs (%d duplicate ids), %d total", rel, added, dup, ndocs)
     for rel in set(known) - present:
-        stats["docs_removed"] += _delete_docs(con, "file=?", (rel,))
+        if rel.startswith(segments.PARTS_DIR + "/"):
+            continue  # a part indexed earlier and not downloaded this run: it is still in the store
+        stats["docs_removed"] += _delete_unsealed(con, rel, root)
         con.execute("DELETE FROM files WHERE path=?", (rel,))
         stats["files_removed"] += 1
     con.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('built', datetime('now'))")
@@ -189,6 +246,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     help="(with --rebuild) also put non-CJK documents in the trigram table (substring search everywhere)")
     ap.add_argument("--db", type=Path, default=DB)
     ap.add_argument("--docs", type=Path, default=DOCS)
+    ap.add_argument("--root", type=Path, default=None, help="checkout with docs-parts/ and state/ids/ (default: --docs/..)")
     ap.add_argument("--optimize", action="store_true", help="merge FTS segments and VACUUM afterwards")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -199,7 +257,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     con = connect(a.db)
     if a.rebuild:
         con.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('trigram_all', ?)", ("1" if a.trigram_all else "0",))
-    stats = update(con, a.docs)
+    stats = update(con, a.docs, a.root)
     if a.optimize or a.rebuild:
         con.execute("INSERT INTO fts_words(fts_words) VALUES('optimize')")
         con.execute("INSERT INTO fts_cjk(fts_cjk) VALUES('optimize')")

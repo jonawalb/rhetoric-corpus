@@ -79,7 +79,7 @@ jobs:
           key: sem-models-${{ hashFiles('scripts/semantic/config.py') }}
           restore-keys: sem-models-
 
-      - name: Pull store
+      - name: Pull store (state, id indexes, index; only the document parts the index has not seen)
         id: pull
         timeout-minutes: 40
         run: uv run --no-sync python scripts/store_sync.py pull
@@ -90,6 +90,15 @@ jobs:
         continue-on-error: true
         timeout-minutes: 165
         run: uv run --no-sync python scripts/ci_collect.py --budget $(( COLLECT_MINUTES * 60 ))
+
+      - name: Seal collected documents
+        id: seal
+        if: always() && steps.pull.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        # Segmented store (layout 2): the collected lines become one verified part in the store + state/ids; the
+        # part stays under docs-parts/ for the index build. A no-op while the store is still layout 1.
+        run: uv run --no-sync python scripts/store_sync.py seal --keep-parts 2>&1 | tail -3
 
       - name: Build index
         id: index
@@ -103,7 +112,9 @@ jobs:
         if: always() && steps.pull.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 25
-        run: uv run --no-sync python scripts/store_sync.py push --only docs,state 2>&1 | tail -3
+        run: |
+          uv run --no-sync python scripts/store_sync.py seal --keep-parts 2>&1 | tail -2
+          uv run --no-sync python scripts/store_sync.py push --only docs,state 2>&1 | tail -3
 
       - name: Semantic layer (incremental)
         id: semantic
@@ -140,7 +151,8 @@ jobs:
         timeout-minutes: 40
         run: |
           for i in 1 2 3; do
-            uv run --no-sync python scripts/store_sync.py push && exit 0
+            uv run --no-sync python scripts/store_sync.py seal --keep-parts \
+              && uv run --no-sync python scripts/store_sync.py push && exit 0
             echo "push attempt $i failed; retrying in 60 s"; sleep 60
           done
           exit 1
@@ -170,13 +182,13 @@ jobs:
         if: always()
         env:
           OUTCOMES: >-
-            pull=${{ steps.pull.outcome }} collect=${{ steps.collect.outcome }} index=${{ steps.index.outcome }}
+            pull=${{ steps.pull.outcome }} collect=${{ steps.collect.outcome }} seal=${{ steps.seal.outcome }} index=${{ steps.index.outcome }}
             semantic=${{ steps.semantic.outcome }} trends=${{ steps.trends.outcome }} publish=${{ steps.publish.outcome }}
             push=${{ steps.push.outcome }}
         run: |
           {
             echo "### Steps"; echo; for o in $OUTCOMES; do echo "- ${o%%=*}: **${o#*=}**"; done; echo
             echo "### Disk"; echo; echo '```'; df -h / | tail -1
-            du -sh .venv docs state index/corpus.sqlite index/semantic index/semantic/models staging 2>/dev/null; echo '```'
+            du -sh .venv docs docs-parts state index/corpus.sqlite index/semantic index/semantic/models staging 2>/dev/null; echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           [ "${{ steps.push.outcome }}" = success ] || { echo "store push did not succeed"; exit 1; }

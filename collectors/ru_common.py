@@ -264,6 +264,7 @@ class BigState(lib.State):
 
 _ID_RE = re.compile(rb'\{"id": "((?:[^"\\]|\\.)*)"')
 _IDS: Dict[str, tuple] = {}  # path -> (inode, offset read so far, set of ids)
+_SEALED_AT: Dict[str, int] = {}  # path -> size of the source's sealed-id index when _IDS[path] was read
 
 
 def _ids_since(path, inode_off_ids: Optional[tuple]) -> tuple:
@@ -290,7 +291,7 @@ def _ids_since(path, inode_off_ids: Optional[tuple]) -> tuple:
 
 
 def write_docs_fast(country: str, source: str, rows: Iterable[Dict]) -> tuple:
-    """Same contract as lib.write_docs (append, skip ids already present, same lock file), but the set of ids
+    """Same contract as lib.write_docs (append, skip ids already present or sealed, same lock file), but the set of ids
     already in the file is kept in memory and only the bytes appended since the last call (by any process)
     are read, instead of re-reading the whole JSONL file on every batch. Returns (added, total)."""
     import fcntl
@@ -305,17 +306,24 @@ def write_docs_fast(country: str, source: str, rows: Iterable[Dict]) -> tuple:
     with lib._critical(), open(path.with_suffix(".lock"), "w") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         try:
-            ino, off, seen = _ids_since(path, _IDS.get(key))
+            # A seal (scripts/segments.py) appends to the source's id index before it cuts sealed lines from the
+            # file, so a grown index means the cached offset may no longer fit the file: re-read it from the start.
+            sealed_size, sealed = lib.sealed_state(country, source)
+            cached = _IDS.get(key)
+            if cached is not None and _SEALED_AT.get(key) != sealed_size:
+                cached = None
+            ino, off, seen = _ids_since(path, cached)
             added = 0
             with path.open("a", encoding="utf-8") as f:
                 for r in rows:
-                    if r["id"] in seen:
+                    if r["id"] in seen or r["id"] in sealed:
                         continue
                     seen.add(r["id"])
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
                     added += 1
             _IDS[key] = _ids_since(path, (ino, off, seen)) if ino is not None else _ids_since(path, None)
-            return added, len(seen)
+            _SEALED_AT[key] = sealed_size
+            return added, len(sealed) + sum(1 for i in _IDS[key][2] if i not in sealed)
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 

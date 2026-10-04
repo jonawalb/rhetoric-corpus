@@ -19,7 +19,6 @@ Run: uv run --project ~/Projects/rhetoric-corpus python collectors/ir_mfa.py [--
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 import time
@@ -118,7 +117,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0)
     a = ap.parse_args()
     st = lib.State(SRC)
-    have = {json.loads(l)["id"].split(":")[1] for l in open(lib.docs_path("IR", "iran_mfa_en"), encoding="utf-8")}
+    have = {i.split(":")[1] for i in lib.existing_ids(lib.docs_path("IR", "iran_mfa_en"))}  # file + sealed ids
     index = load_index()
     order = sorted((k for k in index if k not in have), key=int, reverse=True)
     log.info("%d ids in Wayback, %d not in iran_mfa_en (%d done)", len(index), len(order),

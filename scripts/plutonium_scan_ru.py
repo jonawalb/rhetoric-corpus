@@ -1,11 +1,16 @@
-"""Scan docs/RU/*.jsonl for plutonium-pit terms; print JSON lines of hits with sentence snippets.
+"""Scan the RU documents (docs-parts/ + docs/RU/*.jsonl) for plutonium-pit terms; print JSON lines of hits with sentence snippets.
 
     python3 scripts/plutonium_scan_ru.py > /tmp/hits.jsonl
 Groups: pit = pit/core production terms; plutonium = any other plutonium mention; degrade = 'разучил'/
 'деградация ядерной инфраструктуры' (only when in the same doc as a nuclear term)."""
-import glob
 import json
 import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+import segments  # noqa: E402
 
 PIT = re.compile(r"плутониев\w* (?:сердечник|ядр)|ядерн\w* сердечник|сердечник\w* (?:для|из) плутони|«питы?»|"
                  r"\bW87-1\b|Лос-Аламос|Саванн\w*[- ]Ривер|Роки[- ]Флэтс|\bNNSA\b|Национальн\w* управлени\w* по ядерной безопасности|"
@@ -19,15 +24,13 @@ def sentences(text):
     return [s.strip() for s in re.split(r"(?<=[.!?…»\"])\s+|\n", text) if s.strip()]
 
 
-for f in sorted(glob.glob("docs/RU/*.jsonl")):
-    for line in open(f, encoding="utf-8"):
-        r = json.loads(line)
-        t = (r.get("title") or "") + "\n" + r["text"]
-        grp = "pit" if PIT.search(t) else ("plutonium" if PLU.search(t) else ("degrade" if DEG.search(t) and NUC.search(t) else None))
-        if not grp:
-            continue
-        rx = {"pit": PIT, "plutonium": PLU, "degrade": DEG}[grp]
-        snips = [s[:400] for s in sentences(t) if rx.search(s)]
-        print(json.dumps({"group": grp, "source": r["source"], "org": r.get("org"), "date": r["date"],
-                          "speaker": r.get("speaker"), "title": r.get("title"), "url": r["url"], "snips": snips[:6]},
-                         ensure_ascii=False))
+for _, r in segments.iter_docs(ROOT, ["RU"]):  # sealed parts (docs-parts/) + active docs/RU/*.jsonl
+    t = (r.get("title") or "") + "\n" + r["text"]
+    grp = "pit" if PIT.search(t) else ("plutonium" if PLU.search(t) else ("degrade" if DEG.search(t) and NUC.search(t) else None))
+    if not grp:
+        continue
+    rx = {"pit": PIT, "plutonium": PLU, "degrade": DEG}[grp]
+    snips = [s[:400] for s in sentences(t) if rx.search(s)]
+    print(json.dumps({"group": grp, "source": r["source"], "org": r.get("org"), "date": r["date"],
+                      "speaker": r.get("speaker"), "title": r.get("title"), "url": r["url"], "snips": snips[:6]},
+                     ensure_ascii=False))

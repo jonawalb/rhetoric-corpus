@@ -1,16 +1,18 @@
-"""Scan docs/<CC>/*.jsonl for the plutonium-pit test-case terms (BRIEF.md) and print a Markdown report.
+"""Scan the documents of the given countries (docs-parts/ + docs/<CC>/*.jsonl) for the plutonium-pit test-case
+terms (BRIEF.md) and print a Markdown report.
 
 Run: uv run --project ~/Projects/rhetoric-corpus python scripts/plutonium_scan.py KP BY US PK IN
 """
 from __future__ import annotations
 
-import json
 import re
 import sys
 from collections import Counter
 from pathlib import Path
 
 DOCS = Path(__file__).resolve().parent.parent / "docs"
+sys.path.insert(0, str(DOCS.parent / "scripts"))
+import segments  # noqa: E402
 TERMS = {
     "EN plutonium pit/core": r"plutonium (?:pits?|cores?)",
     "EN pit production / war reserve pit": r"pit production|war[- ]reserve pits?",
@@ -37,22 +39,18 @@ def main(countries: list) -> None:
     pats = {k: re.compile(v, re.I) for k, v in TERMS.items()}
     print("| country | source | docs | date range |\n|---|---|---|---|")
     hits = []
-    for cc in countries:
-        for f in sorted((DOCS / cc).glob("*.jsonl")):
-            n, dates = 0, []
-            for line in f.open(encoding="utf-8"):
-                if not line.strip():
-                    continue
-                d = json.loads(line)
-                n += 1
-                dates.append(d["date"])
-                blob = (d.get("title") or "") + "\n" + d["text"]
-                for k, p in pats.items():
-                    for m in p.finditer(blob):
-                        s = max(0, m.start() - 140)
-                        hits.append((k, cc, f.stem, d["date"], d["url"], blob[s:m.end() + 140].replace("\n", " ")))
-                        break
-            print(f"| {cc} | {f.stem} | {n} | {min(dates) if dates else '-'} → {max(dates) if dates else '-'} |")
+    per_source: dict = {}
+    for _, d in segments.iter_docs(DOCS.parent, countries):  # sealed parts (docs-parts/) + active docs/<CC>/*.jsonl
+        cc, src = d["country"].upper(), d["source"]
+        per_source.setdefault((cc, src), []).append(d["date"])
+        blob = (d.get("title") or "") + "\n" + d["text"]
+        for k, p in pats.items():
+            for m in p.finditer(blob):
+                s = max(0, m.start() - 140)
+                hits.append((k, cc, src, d["date"], d["url"], blob[s:m.end() + 140].replace("\n", " ")))
+                break
+    for (cc, src), dates in sorted(per_source.items(), key=lambda kv: ([c.upper() for c in countries].index(kv[0][0]), kv[0][1])):
+        print(f"| {cc} | {src} | {len(dates)} | {min(dates)} → {max(dates)} |")
     print("\n## Hits by term\n")
     c = Counter((h[0], h[1]) for h in hits)
     print("| term | country | docs |\n|---|---|---|")

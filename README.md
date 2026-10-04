@@ -9,9 +9,11 @@ most 300 characters with a link. SOURCES.md lists every source, its robots/rate 
 ## Nightly job (GitHub Actions)
 
 `.github/workflows/nightly.yml` runs daily at 07:00 UTC (and on demand): pull the private store
-(`scripts/store_sync.py pull`, Hugging Face dataset `wallabee1/rhetoric-corpus-store`, private) → collect, time-boxed
+(`scripts/store_sync.py pull`, Hugging Face dataset `wallabee1/rhetoric-corpus-store`, private: state, id indexes, the
+stored search index, and only the document parts that index has not indexed yet) → collect, time-boxed
 (`scripts/ci_collect.py`: the collectors of `scripts/resume_all.sh`, all sources in parallel, new items before
-backfill, SIGTERM at the deadline) → `build_index.py` → semantic layer (incremental, CPU) → `publish/build_trends.py`
+backfill, SIGTERM at the deadline) → `store_sync.py seal --keep-parts` (the run's documents become one verified part)
+→ `build_index.py` → semantic layer (incremental, CPU) → `publish/build_trends.py`
 → `publish/build_hf_data.py --trends staging/trends --upload` (sealed search + Trends data to the public dataset
 `wallabee1/rhetoric-search-data`, which the live page reads, so no site redeploy is needed) → push the store (always,
 even after a failed step). Sundays also run a full semantic pass and squash the Hub histories. Secrets: `HF_TOKEN`
@@ -21,7 +23,10 @@ Collector output goes to `logs/ci/<date>/` in the private store; the public run 
 ## Layout
 
 ```
-docs/<COUNTRY>/<source>.jsonl   one document per line (schema below); every collector writes here
+docs/<COUNTRY>/<source>.jsonl   active buffer, one document per line (schema below); every collector appends here
+docs-parts/<YYYY-MM>/*.jsonl.gz sealed parts (store layout 2): immutable gzip JSONL of many sources; on the laptop
+                                they live only in the private store (`store_sync.py pull --only docs-parts` fetches all)
+state/ids/<COUNTRY>/<source>.ids  ids already sealed into parts: writers skip them (lib.write_docs & co.)
 raw/<source>/...                raw HTML/PDF caches (never shipped)
 index/corpus.sqlite             search index built from docs/ (scripts/build_index.py; only that script writes it)
 collectors/lib.py               shared polite-fetch library; collectors/<source>.py use it
@@ -34,6 +39,14 @@ SOURCES.md                      one row per source: URL, coverage, counts, colle
 
 Git tracks code, SOURCES.md and terms; `docs/ raw/ index/ state/ logs/ reports/` are ignored (large, and private; the
 nightly job keeps them in the private store).
+
+Segmented store (`scripts/segments.py`, since 2026-10-04): `store_sync.py seal` (run by `scripts/laptop_offload.sh`
+every 3 h, and by CI after collecting) cuts the complete lines of every active docs file into one gzip part, uploads
+it, verifies it in the store (sha256 + line count of a fresh download), appends the ids to `state/ids/`, and only then
+removes the sealed lines from the local files (under the collectors' `docs/<CC>/<source>.lock`). Parts are never
+rewritten; `build_index.py` indexes each part once (rowids stay stable); readers that need the documents themselves
+use `segments.iter_docs()` (parts + active files, each id once). `store_sync.py migrate` converted the old per-source
+`docs/*.jsonl` of the store into `docs-parts/legacy/` once.
 
 Document schema: `{"id": "<source>:<stable id>", "country": "RU", "source": "kremlin_en", "outlet":
 "official|state_media|commentary", "org": "Kremlin", "lang": "en|ru|zh|fa|ko|…", "date": "YYYY-MM-DD", "url": …,
@@ -155,7 +168,8 @@ floor (`MIN_FREE_GB`). Log: `logs/nightly_publish.log`.
 ```
 uv run python scripts/export_dataset.py --version 0.1.0 --snapshot-date 2026-10-02 [--countries RU CN] [--from …] [--to …]
 ```
-Builds `release/<version>/` (gitignored; nothing is uploaded) from `docs/**/*.jsonl`: `official/<CC>.parquet` (full
+Builds `release/<version>/` (gitignored; nothing is uploaded) from `docs/**/*.jsonl` (with the segmented store: all
+local parts + active files, materialized per source; fetch the parts first with `store_sync.py pull --only docs-parts`): `official/<CC>.parquet` (full
 text, all fields, zstd) + `official_jsonl/<CC>.jsonl.gz`, `media/<CC>.parquet` (state media/media/commentary as
 metadata, word count and text SHA-256 only, no body text), optional `semantic/` (only once
 `index/semantic` has per-doc tone scores), README (dataset card), CODEBOOK, CHANGELOG, MANIFEST.json, SHA256SUMS and

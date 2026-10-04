@@ -360,7 +360,8 @@ def read_docs(path: Path) -> Iterable[Dict]:
                 yield json.loads(line)
 
 
-def existing_ids(path: Path) -> set:
+def _file_ids(path: Path) -> set:
+    """Ids of the documents in one JSONL file."""
     if not path.exists():
         return set()
     ids = set()
@@ -371,6 +372,70 @@ def existing_ids(path: Path) -> set:
                 ids.add(json.loads(f'"{m.group(1)}"'))
             elif line.strip():
                 ids.add(json.loads(line)["id"])
+    return ids
+
+
+# ---------------------------------------------------------------------------------------------- sealed ids
+# Segmented store (scripts/segments.py): the offload seals the lines of docs/<CC>/<source>.jsonl into immutable
+# parts in the private store, appends their ids to state/ids/<CC>/<source>.ids (append-only, one id per line, lines
+# starting with '#' are seal markers) and then cuts those lines from the local file. Writers skip an id when it is
+# in that index OR in the local file. Every seal appends at least a marker line, so a writer that caches the local
+# file's ids by offset (ru_common.write_docs_fast) sees the index grow and re-reads the shortened file.
+_SEALED: Dict[str, tuple] = {}  # ids path -> (bytes read, set of ids)
+
+
+def ids_path(country: str, source: str) -> Path:
+    return STATE / "ids" / country.upper() / f"{source}.ids"
+
+
+def _docs_key(path: Path) -> Optional[tuple]:
+    """(country, source) when `path` is docs/<CC>/<source>.jsonl under DOCS, else None."""
+    try:
+        rel = Path(path).resolve().relative_to(DOCS.resolve())
+    except ValueError:
+        return None
+    if len(rel.parts) != 2 or not rel.name.endswith(".jsonl"):
+        return None
+    return rel.parts[0], rel.name[:-len(".jsonl")]
+
+
+def sealed_state(country: str, source: str) -> tuple:
+    """(size of the id index file read so far, set of sealed ids) for a source; read incrementally."""
+    p = ids_path(country, source)
+    key = str(p)
+    try:
+        size = p.stat().st_size
+    except FileNotFoundError:
+        _SEALED.pop(key, None)
+        return 0, set()
+    off, ids = _SEALED.get(key, (0, set()))
+    if size < off:  # replaced by a smaller file (never done by the seal; e.g. a manual repair): start again
+        off, ids = 0, set()
+    if size > off:
+        with p.open("rb") as f:
+            f.seek(off)
+            for line in f:
+                if not line.endswith(b"\n"):
+                    break
+                off += len(line)
+                if not line.startswith(b"#") and line.strip():
+                    ids.add(line.rstrip(b"\n").decode("utf-8"))
+        _SEALED[key] = (off, ids)
+    return off, ids
+
+
+def sealed_ids(country: str, source: str) -> set:
+    """Ids already sealed into the store for this source (do not modify the returned set)."""
+    return sealed_state(country, source)[1]
+
+
+def existing_ids(path: Path) -> set:
+    """Ids of the documents in `path`; for a docs/<CC>/<source>.jsonl file also the ids already sealed into the
+    store (and cut from the local file), so a collector's 'have' set stays complete."""
+    ids = _file_ids(Path(path))
+    key = _docs_key(Path(path))
+    if key:
+        ids |= sealed_ids(*key)
     return ids
 
 
@@ -394,7 +459,8 @@ def validate(row: Dict) -> Dict:
 
 
 def write_docs(country: str, source: str, rows: Iterable[Dict], replace: bool = False) -> tuple:
-    """Append documents to docs/<COUNTRY>/<source>.jsonl, skipping ids already present.
+    """Append documents to docs/<COUNTRY>/<source>.jsonl, skipping ids already present (in the file or sealed into
+    the store, see sealed_ids).
 
     replace=True rewrites the file with exactly `rows` (still de-duplicated by id; the last copy wins).
     Returns (added, total). Safe against concurrent writers via an flock on the file."""
@@ -416,16 +482,17 @@ def write_docs(country: str, source: str, rows: Iterable[Dict], replace: bool = 
                         f.write(json.dumps(r, ensure_ascii=False) + "\n")
                 os.replace(tmp, path)
                 return len(uniq), len(uniq)
-            seen = existing_ids(path)
+            seen = _file_ids(path)
+            sealed = sealed_ids(country, source)
             added = 0
             with path.open("a", encoding="utf-8") as f:
                 for r in rows:
-                    if r["id"] in seen:
+                    if r["id"] in seen or r["id"] in sealed:
                         continue
                     seen.add(r["id"])
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
                     added += 1
-            return added, len(seen)
+            return added, len(sealed) + sum(1 for i in seen if i not in sealed)
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
@@ -484,5 +551,6 @@ def setup_logging(name: str, level: int = logging.INFO) -> logging.Logger:
 
 
 __all__ = ["ROOT", "DOCS", "RAW", "STATE", "UA", "HOST_DELAY", "robots_allowed", "crawl_delay", "wayback_latest",
-           "fetch", "fetch_meta", "clean_html", "make_id", "docs_path", "read_docs", "existing_ids", "validate",
+           "fetch", "fetch_meta", "clean_html", "make_id", "docs_path", "read_docs", "existing_ids", "ids_path",
+           "sealed_ids", "validate",
            "write_docs", "State", "setup_logging", "now_iso"]

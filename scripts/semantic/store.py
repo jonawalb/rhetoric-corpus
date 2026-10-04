@@ -82,8 +82,22 @@ def crc(text: str) -> int:
 
 # ---------------------------------------------------------------------------------------------- sync
 def _samples_for(files: Iterable[str], wanted: set) -> Dict[str, str]:
-    """doc id -> 'sample' field, read from the JSONL files (the corpus index does not keep that field)."""
+    """doc id -> 'sample' field: from the corpus index's `sample` column (kept since the segmented store, so sealed
+    documents need no JSONL file), plus any docs/<file>.jsonl still present locally."""
     out: Dict[str, str] = {}
+    try:
+        cc = corpus()
+        try:
+            if "sample" in {r[1] for r in cc.execute("PRAGMA table_info(docs)")}:
+                ids = sorted(wanted)
+                for i in range(0, len(ids), 500):
+                    part = ids[i:i + 500]
+                    out.update(cc.execute(f"SELECT id, sample FROM docs WHERE sample IS NOT NULL AND id IN "
+                                          f"({','.join('?' * len(part))})", part))
+        finally:
+            cc.close()
+    except sqlite3.Error as e:
+        logger.warning("sample lookup in the corpus index failed: %s", e)
     docs_root = CORPUS_DB.parent.parent / "docs"
     for rel in files:
         p = docs_root / rel

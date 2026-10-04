@@ -1,4 +1,8 @@
-"""Build a versioned, self-documenting dataset release from docs/**/*.jsonl -> release/<version>/.
+"""Build a versioned, self-documenting dataset release from the corpus documents -> release/<version>/.
+
+Input: docs/**/*.jsonl, or, with the segmented store (docs-parts/ + state/ids/ present), every local part plus the
+active docs/ files, materialized per source under staging/export_docs/ (all parts must be local:
+`store_sync.py pull --only docs-parts`; the build refuses otherwise).
 
     uv run python scripts/export_dataset.py --version 0.1.0 [--snapshot-date 2026-10-02] [--countries RU CN]
                                             [--from 2021-01-01] [--to 2026-10-02]
@@ -35,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_data as RD  # noqa: E402
 import release_docs  # noqa: E402
 import release_semantic  # noqa: E402
+import segments  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 logger = logging.getLogger("export_dataset")
@@ -181,6 +186,12 @@ def build(a: argparse.Namespace) -> Dict[str, Any]:
     final = a.out_root / a.version
     if final.exists() and not a.overwrite:
         raise SystemExit(f"{final} exists; releases are never overwritten (use a new --version, or --overwrite)")
+    if a.docs == ROOT / "docs" and ((ROOT / "docs-parts").exists() or (ROOT / "state" / "ids").exists()):
+        # Segmented store: sealed documents live in docs-parts/, docs/ holds only the unsealed tail.
+        a.docs = ROOT / "staging" / "export_docs"
+        shutil.rmtree(a.docs, ignore_errors=True)
+        n = segments.materialize(ROOT, a.docs, a.countries)
+        logger.info("materialized %d documents from docs-parts/ + docs/ into %s", sum(n.values()), a.docs)
     files = sorted(p for p in a.docs.glob("*/*.jsonl")
                    if not a.countries or p.parent.name in {c.upper() for c in a.countries})
     in_bytes = sum(p.stat().st_size for p in files)
