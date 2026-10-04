@@ -10,6 +10,9 @@ capture is older than START cannot have been published on/after START, so it is 
 the rest are fetched (raw `id_` copy of that capture), newest id first, and kept only if the page's own
 date is >= START. The original site's robots.txt is checked (lib.robots_allowed) before each Wayback copy.
 
+2026-10-03: START moved to 1990 (whole archive). FA pages use a different layout from EN (div.Content with
+span.oliveDate = Solar Hijri date, h3 = title; see parse_fa), checked on real Wayback captures.
+
 Dates: meta article:published_time / datePublished (Gregorian) when present, else the page's Solar Hijri
 date (ir_common). Items without a readable date are skipped. speaker = "Khamenei" for FA speeches and
 messages, and for EN items whose title or lead names the Leader/Khamenei, up to LAST_DAY (2026-02-28, his
@@ -29,10 +32,10 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lib  # noqa: E402
-from ir_common import jalali_str_to_iso, to_ascii_digits  # noqa: E402
-from lib import RAW, State, clean_html, fetch, make_id, now_iso, setup_logging, write_docs  # noqa: E402
+from ir_common import balanced_div, write_docs_fast, jalali_str_to_iso, to_ascii_digits  # noqa: E402
+from lib import RAW, State, clean_html, fetch, make_id, now_iso, setup_logging  # noqa: E402
 
-START = "2021-01-01"
+START = "1990-01-01"   # whole archive (was 2021-01-01 until 2026-10-03)
 # Ali Khamenei was killed on 2026-02-28 (the site's own item "Announcement of the Martyrdom of Grand Ayatollah
 # Sayyid Ali Hosseini [Khamenei]", english.khamenei.ir/news/12103). Items dated after that cannot be his new
 # words, so speaker is left null for them (the office site keeps publishing excerpts and commemorations).
@@ -87,7 +90,30 @@ def _meta_date(html: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def parse_fa(html: str) -> Optional[Dict]:
+    """farsi.khamenei.ir {speech,message}-content layout (checked 2026-10-03 on Wayback captures):
+    <div class="Content"><span class="oliveDate">1389/06/09</span><h5>kicker</h5><h3>title</h3> body </div>."""
+    inner = balanced_div(html, 'class="Content"')
+    if not inner:
+        return None
+    md = re.search(r'class="oliveDate"[^>]*>(.*?)</span>', inner, re.S)
+    date = jalali_str_to_iso(clean_html(md.group(1))) if md else None
+    mt = re.search(r"<h3[^>]*>(.*?)</h3>", inner, re.S)
+    title = clean_html(mt.group(1)) if mt else ""
+    if not title:
+        og = re.search(r'<meta property="og:title" content="([^"]*)"', html)
+        title = clean_html(og.group(1)) if og else ""
+    body = re.sub(r'<span class="oliveDate".*?</span>|<h5[^>]*>.*?</h5>|<h3[^>]*>.*?</h3>', " ", inner, count=3,
+                  flags=re.S)
+    text = clean_html(re.sub(r"\s+", " ", body).replace("<br />", "<br/>"))
+    if not date or not title:
+        return None
+    return {"title": title, "date": date, "text": text}
+
+
 def parse(html: str, lang: str) -> Optional[Dict]:
+    if lang == "fa" and 'class="Content"' in html:
+        return parse_fa(html)
     i = html.find('class="item-body"')
     if i < 0:
         return None
@@ -144,6 +170,8 @@ def main() -> None:
         st.mark_done(key)
         if not art:
             log.info("unparsed capture %s %s", ts, orig)
+        elif a.lang == "fa" and len(re.findall(r"[\u0600-\u06FF]", art["text"])) < 0.5 * len(re.findall(r"[^\W\d_]", art["text"])):
+            log.info("not Persian (the FA host also served English pages, ids ~101xxx): %s", orig)
         elif art["date"] >= START and len(art["text"]) >= MIN_TEXT:
             if a.lang == "fa":
                 kind = "transcript" if section == "speech" else "statement"
@@ -158,7 +186,7 @@ def main() -> None:
                 speaker = ("Khamenei" if re.search(r"Khamenei|\bLeader\b", head) and art["date"] <= LAST_DAY
                            else None)
                 url = orig.replace("http://", "https://")
-            write_docs("IR", source, [{
+            write_docs_fast("IR", source, [{
                 "id": make_id(source, key.split(":")[1] if a.lang == "en" else key.replace(":", "-")), "country": "IR", "source": source,
                 "outlet": "official", "org": "Office of the Supreme Leader", "lang": a.lang,
                 "date": art["date"], "url": url, "title": art["title"], "speaker": speaker, "kind": kind,

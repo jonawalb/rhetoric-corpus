@@ -59,12 +59,14 @@ def jalali_str_to_iso(s: str) -> Optional[str]:
     return None
 
 
-PRESIDENTS: Tuple[Tuple[str, str], ...] = (("2021-08-03", "Rouhani"), ("2024-05-19", "Raisi"),
+PRESIDENTS: Tuple[Tuple[str, str], ...] = (("2005-08-03", "Khatami"), ("2013-08-03", "Ahmadinejad"),
+                                           ("2021-08-03", "Rouhani"), ("2024-05-19", "Raisi"),
                                            ("2024-07-28", "Mokhber"), ("9999-12-31", "Pezeshkian"))
 
 
 def president_on(iso: str) -> str:
-    """Incumbent (or acting) president on a date: Rouhani to 2021-08-03, Raisi to 2024-05-19, Mokhber
+    """Incumbent (or acting) president on a date: Khatami to 2005-08-03, Ahmadinejad to 2013-08-03,
+    Rouhani to 2021-08-03, Raisi to 2024-05-19, Mokhber
     (acting) to 2024-07-28, Pezeshkian after."""
     for end, name in PRESIDENTS:
         if iso <= end:
@@ -72,4 +74,33 @@ def president_on(iso: str) -> str:
     return PRESIDENTS[-1][1]
 
 
-__all__ = ["to_ascii_digits", "jalali_to_gregorian", "jalali_str_to_iso", "president_on", "JALALI_MONTHS"]
+# ------------------------------------------------------------------------- scale helpers (added 2026-10-03)
+# The deep IR backfills (state-media archives back to the 2000s, 10^5-10^6 URLs per site) reuse the generic
+# scale helpers written for the RU collectors: an append-only done-log state, an incremental-id JSONL writer,
+# a wildcard-aware robots.txt check and a balanced <div> extractor. Re-exported here so IR collectors import
+# from one place.
+from ru_common import BigState, balanced_div, robots_ok, write_docs_fast  # noqa: E402
+
+
+def fa_norm(s: str) -> str:
+    """Arabic yeh/kaf -> Persian (ي→ی, ك→ک), Persian/Arabic digits -> ASCII. For matching/parsing only;
+    stored text is kept as served (the index folds ي/ك itself)."""
+    return to_ascii_digits(s).replace("ي", "ی").replace("ك", "ک")
+
+
+def tehran_date(iso_ts: str) -> Optional[str]:
+    """'2024-03-19T20:27:00Z' / '...+03:30' -> the calendar date in Tehran (UTC+03:30; +04:30 DST before 2022
+    is ignored: at most a few late-night items shift by one day). Date-only strings pass through."""
+    from datetime import datetime, timedelta, timezone
+    s = iso_ts.strip()
+    m = re.match(r"(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?)?", s)
+    if not m:
+        return None
+    if not m.group(2) or not m.group(3) or m.group(3) not in ("Z", "+00:00", "+0000"):
+        return m.group(1)
+    t = datetime.fromisoformat(m.group(1) + "T" + m.group(2)).replace(tzinfo=timezone.utc)
+    return (t + timedelta(hours=3, minutes=30)).date().isoformat()
+
+
+__all__ = ["to_ascii_digits", "jalali_to_gregorian", "jalali_str_to_iso", "president_on", "JALALI_MONTHS",
+           "fa_norm", "tehran_date", "BigState", "balanced_div", "robots_ok", "write_docs_fast"]

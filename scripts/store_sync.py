@@ -51,7 +51,7 @@ REPO = os.environ.get("RHETORIC_STORE_REPO", "wallabee1/rhetoric-corpus-store")
 MANIFEST = "manifest.json"
 MARKER = ROOT / ".store_pulled"
 RAW_DIRS = ("by_president", "ir_presstv", "kp_rodong_en", "ir_khamenei_en")
-INCLUDE = ["docs/*/*.jsonl", "state/*.json", "state/*.cookies", *[f"raw/{d}/*" for d in RAW_DIRS],
+INCLUDE = ["docs/*/*.jsonl", "state/*.json", "state/*.done.txt", "state/*.cookies", *[f"raw/{d}/*" for d in RAW_DIRS],
            "index/corpus.sqlite", "index/semantic/*", "index/semantic/**/*", "reports/*", "reports/**/*", "logs/ci/*"]
 EXCLUDE = ["index/semantic/models/*", "*.sqlite-wal", "*.sqlite-shm", "*.tmp", "*.lock", "*/.*", ".*"]
 DELETABLE = ("index/semantic/", "logs/ci/")

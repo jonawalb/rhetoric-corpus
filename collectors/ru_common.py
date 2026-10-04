@@ -192,7 +192,7 @@ def run_queue(items: Iterable[Dict], state: "lib.State", parse: Callable[[Dict],
     def flush() -> None:
         for src, rows in pending.items():
             if rows:
-                added, total = lib.write_docs(country, src, rows)
+                added, total = write_docs_fast(country, src, rows)
                 stats["rows"] += added
                 logger.info("wrote %d rows to %s (total %d)", added, src, total)
         pending.clear()
@@ -224,6 +224,100 @@ def run_queue(items: Iterable[Dict], state: "lib.State", parse: Callable[[Dict],
     flush()
     logger.info("queue finished: %s", stats)
     return stats
+
+
+# ----------------------------------------------------------------------------------------- scale helpers
+# Added 2026-10-03 for the deep (2000s ->) backfills, where queues reach millions of URLs.
+class BigState(lib.State):
+    """lib.State whose done-set also lives in an append-only text file state/<name>.done.txt (one key per line).
+
+    lib.State rewrites the whole sorted done list on every save, which is fine for 10^4 keys but not for 10^6.
+    Keys already in the JSON file stay there (read as before); new keys are only appended to the .done.txt
+    file, so save() stays O(other state). Drop-in: same name, same JSON file, earlier runs' keys are kept."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self._json_done = list(self.data.get("done", []))
+        self._log_path = lib.STATE / f"{name}.done.txt"
+        if self._log_path.exists():
+            with self._log_path.open(encoding="utf-8") as f:
+                self._done.update(ln.rstrip("\n") for ln in f if ln.strip())
+        self._log = self._log_path.open("a", encoding="utf-8")
+
+    def mark_done(self, key: str) -> None:
+        if key in self._done:
+            return
+        self._done.add(key)
+        self._log.write(key + "\n")
+
+    def _save(self) -> None:
+        import json
+        import os
+        self._log.flush()
+        self.data["done"] = self._json_done
+        self.data["updated"] = lib.now_iso()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=0), "utf-8")
+        os.replace(tmp, self.path)
+
+
+_ID_RE = re.compile(rb'\{"id": "((?:[^"\\]|\\.)*)"')
+_IDS: Dict[str, tuple] = {}  # path -> (inode, offset read so far, set of ids)
+
+
+def _ids_since(path, inode_off_ids: Optional[tuple]) -> tuple:
+    import json
+    import os
+    st = os.stat(path) if path.exists() else None
+    if st is None:
+        return (None, 0, set())
+    if inode_off_ids is None or inode_off_ids[0] != st.st_ino or st.st_size < inode_off_ids[1]:
+        inode_off_ids = (st.st_ino, 0, set())
+    ino, off, ids = inode_off_ids
+    with path.open("rb") as f:
+        f.seek(off)
+        for line in f:
+            if not line.endswith(b"\n"):
+                break  # a line still being written by another process: re-read it next time
+            off += len(line)
+            m = _ID_RE.match(line)
+            if m:
+                ids.add(json.loads(b'"' + m.group(1) + b'"'))
+            elif line.strip():
+                ids.add(json.loads(line)["id"])
+    return (ino, off, ids)
+
+
+def write_docs_fast(country: str, source: str, rows: Iterable[Dict]) -> tuple:
+    """Same contract as lib.write_docs (append, skip ids already present, same lock file), but the set of ids
+    already in the file is kept in memory and only the bytes appended since the last call (by any process)
+    are read, instead of re-reading the whole JSONL file on every batch. Returns (added, total)."""
+    import fcntl
+    import json
+    path = lib.docs_path(country, source)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [lib.validate(r) for r in rows]
+    for r in rows:
+        if r["source"] != source or r["country"] != country.upper():
+            raise ValueError(f"{r['id']}: country/source must match the file ({country}/{source})")
+    key = str(path)
+    with lib._critical(), open(path.with_suffix(".lock"), "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            ino, off, seen = _ids_since(path, _IDS.get(key))
+            added = 0
+            with path.open("a", encoding="utf-8") as f:
+                for r in rows:
+                    if r["id"] in seen:
+                        continue
+                    seen.add(r["id"])
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                    added += 1
+            _IDS[key] = _ids_since(path, (ino, off, seen)) if ino is not None else _ids_since(path, None)
+            return added, len(seen)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 def ctext(fragment: str) -> str:

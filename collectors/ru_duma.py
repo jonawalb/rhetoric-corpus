@@ -7,7 +7,11 @@ articles dated before 2021-01-01. ALL TOPICS (no keyword filter). speaker = "Vol
 
 robots.txt (2026-10-02): disallows only /search/, /systems/law/?name=, /analytics/tv/. 5 s between requests.
 
-    uv run --project ~/Projects/rhetoric-corpus python collectors/ru_duma.py [--follow]
+    uv run --project ~/Projects/rhetoric-corpus python collectors/ru_duma.py [--follow] [--start YYYY-MM-DD|earliest]
+
+--start (added 2026-10-03; default 2021-01-01, earliest = 2000-01-01): when the floor is lowered, the downward walk
+resumes ~200 ids above where the earlier run stopped (re-checking the ids it rejected as too old) and continues
+until 100 consecutive articles are older than the new floor (or id 1).
 """
 from __future__ import annotations
 
@@ -25,6 +29,7 @@ import lib  # noqa: E402
 SOURCE = "duma_ru"
 BASE = "http://duma.gov.ru"
 FLOOR = "2021-01-01"
+EARLIEST = "2000-01-01"
 DELAY = 5
 log = lib.setup_logging("ru_duma")
 
@@ -86,7 +91,7 @@ def flush(buf: list, at: str) -> None:
 
 
 def run(st: lib.State) -> None:
-    top = newest_id()
+    top = newest_id() or st.get("hi")  # listing unreachable: continue the backfill from the stored cursor
     if not top:
         log.warning("could not read the news listing")
         return
@@ -122,10 +127,22 @@ def run(st: lib.State) -> None:
 
 
 def main() -> None:
+    global FLOOR
     ap = argparse.ArgumentParser()
     ap.add_argument("--follow", action="store_true")
+    ap.add_argument("--start", default=FLOOR)
     a = ap.parse_args()
+    FLOOR = EARLIEST if a.start == "earliest" else a.start
     st = lib.State("ru_duma")
+    if (st.get("floor") or "2021-01-01") > FLOOR and st.get("cursor"):
+        cur = int(st["cursor"])
+        have = {i.split(":", 1)[1] for i in lib.existing_ids(lib.docs_path("RU", SOURCE))}
+        for i in range(cur, cur + 200):
+            if str(i) not in have:
+                st._done.discard(str(i))
+        st["cursor"], st["old_run"] = cur + 200, 0
+    st["floor"] = FLOOR
+    st.save()
     run(st)
     while a.follow:
         time.sleep(6 * 3600)

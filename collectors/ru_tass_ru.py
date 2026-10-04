@@ -15,7 +15,11 @@ Modes:
             /n/, */api/*, /video/ and two single articles: these sections are allowed.
 
     uv run --project ~/Projects/rhetoric-corpus python collectors/ru_tass_ru.py rss --follow
-    uv run --project ~/Projects/rhetoric-corpus python collectors/ru_tass_ru.py backfill
+    uv run --project ~/Projects/rhetoric-corpus python collectors/ru_tass_ru.py backfill [--start YYYY-MM-DD|earliest]
+
+--start (backfill, added 2026-10-03; default 2021-01-01; earliest = 2014-01-01, when tass.ru replaced itar-tass.com):
+adds the CDX half-years before 2021 for the same three sections; the queue stays newest-first by article id, so
+the older articles come after the 2021+ ones.
 """
 from __future__ import annotations
 
@@ -37,6 +41,7 @@ RSS = "https://tass.ru/rss/v2.xml"
 SECTIONS = ["politika", "mezhdunarodnaya-panorama", "armiya-i-opk"]
 BACKFILL_YEARS = range(2021, 2027)
 FLOOR = "2021-01-01"
+EARLIEST = "2014-01-01"
 log = lib.setup_logging("ru_tass_ru")
 
 
@@ -181,10 +186,14 @@ def backfill() -> int:
 
 
 def main() -> None:
+    global FLOOR, BACKFILL_YEARS
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["rss", "backfill"], nargs="?", default="rss")
     ap.add_argument("--follow", action="store_true")
+    ap.add_argument("--start", default=FLOOR)
     a = ap.parse_args()
+    FLOOR = EARLIEST if a.start == "earliest" else a.start
+    BACKFILL_YEARS = range(int(FLOOR[:4]), int(time.strftime("%Y")) + 1)
     if a.mode == "backfill":
         while True:
             failures = backfill()

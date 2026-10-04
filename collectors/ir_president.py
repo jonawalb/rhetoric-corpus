@@ -1,5 +1,6 @@
 """Office of the President of Iran (president.ir): Persian and English news items, speeches, messages,
-interviews, 2021-01-01 -> today, newest first.
+interviews, newest first, back to the start of the site's id space (2013, Rouhani's first term; extended
+2026-10-03 from the original 2021-01-01 floor).
 
 president.ir numbers every item in one id space shared by all its languages (/fa/<id>, /en/<id>, /ar/<id>,
 …); an id in the wrong language redirects to /404.html. The collector walks ids downward from the newest id
@@ -28,12 +29,14 @@ from pathlib import Path
 from typing import Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ir_common import jalali_str_to_iso, president_on  # noqa: E402
-from lib import State, clean_html, fetch, make_id, setup_logging, write_docs  # noqa: E402
+from ir_common import write_docs_fast, jalali_str_to_iso, president_on  # noqa: E402
+from lib import State, clean_html, fetch, make_id, setup_logging  # noqa: E402
 
 BASE = "https://president.ir"
-START = "2021-01-01"
-FLOOR_ID = 117000      # id 120000 is dated 1399-12-14 (2021-03-04); walk a little below the expected floor
+START = "2000-01-01"
+# id 120000 is dated 1399-12-14 (2021-03-04), id 80000 1393-05-29 (2014-08-20), id 70000 1392-05-12 (2013-08-03,
+# Rouhani's inauguration week); ids 60000/65000 and below answer /404.html. Walk a little below the expected floor.
+FLOOR_ID = 60000
 STOP_RUN = 200
 MIN_TEXT = 150
 SRC = {"fa": "ir_president_fa", "en": "ir_president_en"}
@@ -115,7 +118,7 @@ def handle(nid: int, st: State) -> Optional[str]:
         return art["date"]
     kind = kind_of(art["title"], art["category"])
     src = SRC[lang]
-    write_docs("IR", src, [{
+    write_docs_fast("IR", src, [{
         "id": make_id(src, str(nid)), "country": "IR", "source": src, "outlet": "official",
         "org": "Presidency", "lang": lang, "date": art["date"], "url": url, "title": art["title"],
         "speaker": president_on(art["date"]) if kind in ("transcript", "interview", "statement") else None,

@@ -27,6 +27,28 @@ Sampling (topic-neutral since 2026-10-02; documented in SOURCES.md). No keyword 
 Article HTML is no longer cached (pages already in raw/<source>/ are still read); only RIA's monthly
 sitemaps are cached. URL discovery uses only robots-allowed sitemaps/RSS; article pages are robots-checked
 (wildcard aware).
+
+DEEP / FULL mode (added 2026-10-03; the defaults above are unchanged when the flags are absent):
+  --start YYYY-MM-DD | earliest   floor of the all-dates queue (default 2021-01-01). "earliest" = Site.earliest,
+                                  the oldest date the site's own sitemaps serve (checked 2026-10-03):
+                                  ria.ru 2004-12, sputnikglobe.com 2004-01, www.rt.com 2005 (sitemap_2000/2006..),
+                                  russian.rt.com 2008, tass.com sitemaps 2020-10 only (older tass.com article URLs are
+                                  discovered from the Wayback CDX URL index per section/year and fetched LIVE).
+  --full                          take the sampled sections IN FULL instead of the capped random subsets:
+                                  tass_com economy/society all items; rt_ru russia/world/ussr/business all items;
+                                  ria_ru / sputnik_en every article. Rows keep `sample` = section (whole section)
+                                  or, for the RIA platform, random + `rank_pos` (see below).
+  RIA platform (ria_ru, sputnik_en) in --full mode runs in PASSES so millions of URLs never sit in memory: pass p takes,
+  from every monthly sitemap >= start, the URLs ranked p*1500 .. (p+1)*1500-1 by the same seeded sha256 rank, and
+  fetches them round-robin over months. Pass 0 on 2021+ months is exactly the existing 1,500/month sample. Any
+  prefix of a month's rank order is a uniform random sample of that month, so `rank_pos` (position in the month's
+  rank order) lets users rebuild an exact random sample of any size <= what has been fetched; months whose
+  passes are exhausted are complete.
+  With --follow, RSS is polled every 30 min DURING the long backfill as well (interleaved), not only after it.
+  russian.rt.com: the sitemap index lists sitemap_YYYY_2/_3/_4 parts; earlier runs read only sitemap_YYYY.xml
+  (so rt_ru enumerated about a third of its URLs). Fixed: all parts are read (stratum = year).
+  sputnik_en: sputnikglobe.com (Rossiya Segodnya's English service, formerly sputniknews.com / en.rian.ru), same
+  platform and parser as ria.ru.
 """
 from __future__ import annotations
 
@@ -43,9 +65,11 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lib  # noqa: E402
-from ru_common import balanced_div, ctext, recent_cutoff, robots_ok, run_queue  # noqa: E402
+from ru_common import BigState, balanced_div, ctext, recent_cutoff, robots_ok, run_queue  # noqa: E402
+from ru_passes import run_passes, with_rss  # noqa: E402
 
-START = "2021-01-01"
+START = "2021-01-01"  # default floor; --start overrides it (module global, read by enumerate/select)
+FULL = False          # --full: sampled sections in full (see docstring)
 SAMPLE_SEED = "rhetoric-corpus-ru-statemedia-2026-10-02"
 NUKE_SLUG_RU = (r"yadern|jadern|plutoni|atom|raket|snv|start|drsmd|rsmd|boegolov|boezarjad|ryabkov|rjabkov|pentagon|"
                 r"sarmat|posejdon|poseydon|burevestnik|oreshnik|ispytan|alamos|minitmen|sentinel|nerasprostr|"
@@ -102,6 +126,7 @@ class Site:
     def recent_ok(self, url: str) -> bool:
         raise NotImplementedError
 
+    earliest = START  # oldest date the site's own sitemaps serve (for --start earliest)
     # section -> (stratum group, cap per period or None = take all). Sections not listed are not sampled.
     sample_sections: Dict[str, Tuple[str, Optional[int]]] = {}
 
@@ -110,8 +135,10 @@ class Site:
         return m.group(1) if m else None
 
     def sample_rule(self, it: Dict) -> Optional[Tuple[str, Optional[int]]]:
-        """(group, cap) for the topic-neutral sample, or None if the URL's section is not sampled."""
-        return self.sample_sections.get(self.section(it["url"]) or "")
+        """(group, cap) for the topic-neutral sample, or None if the URL's section is not sampled.
+        With --full every sampled section is taken whole (cap None)."""
+        rule = self.sample_sections.get(self.section(it["url"]) or "")
+        return (rule[0], None) if rule and FULL else rule
 
     def extra(self, html: str, url: str) -> Dict:
         """Extra row fields (the URL section, so users can filter)."""
@@ -127,23 +154,39 @@ class Site:
 
 class Ria(Site):
     source, org, lang, rss = "ria_ru", "RIA Novosti", "ru", "https://ria.ru/export/rss2/archive/index.xml"
+    host, earliest = "ria.ru", "2004-12-01"
     pat = re.compile(r"https://ria\.ru/(\d{8})/([a-z0-9\-]+?)-?\d+\.html$")
 
-    def enumerate(self) -> List[Dict]:
-        idx = _get("https://ria.ru/sitemap_article_index.xml") or ""
-        items = []
+    def month_sitemaps(self, start: str) -> List[Tuple[str, str]]:
+        """[(YYYYMM, monthly sitemap URL)] for months >= start, newest first."""
+        idx = _get(f"https://{self.host}/sitemap_article_index.xml") or ""
+        out = []
         for loc, _ in _locs(idx):
             m = re.search(r"date_start=(\d{8})", loc)
-            if not m or m.group(1)[:6] < START.replace("-", "")[:6]:
-                continue
-            current = m.group(1)[:6] >= time.strftime("%Y%m")
-            sm = _get(loc, None if current else lib.RAW / "ria_ru" / "sitemaps" / f"{m.group(1)}.xml") or ""
-            for u, _ in _locs(sm):
-                mm = self.pat.match(u)
-                if mm:
-                    d = mm.group(1)
-                    items.append({"url": u, "date": f"{d[:4]}-{d[4:6]}-{d[6:]}", "slug": mm.group(2)})
-            log.info("ria sitemap %s: %d urls total", m.group(1), len(items))
+            if m and m.group(1)[:6] >= start.replace("-", "")[:6]:
+                out.append((m.group(1)[:6], loc))
+        return sorted(set(out), reverse=True)
+
+    def month_urls(self, ym: str, loc: str) -> List[Tuple[str, str]]:
+        """[(url, date)] of one monthly sitemap. Sitemaps cached by earlier runs (raw/<source>/sitemaps/) are
+        read; new ones are cached only for the default 2021+ window (disk), older months are re-fetched."""
+        current = ym >= time.strftime("%Y%m")
+        cache = lib.RAW / self.source / "sitemaps" / f"{ym}01.xml"
+        use_cache = not current and (cache.exists() or ym >= "202101")
+        sm = _get(loc, cache if use_cache else None) or ""
+        out = []
+        for u, _ in _locs(sm):
+            mm = self.pat.match(u)
+            if mm:
+                d = mm.group(1)
+                out.append((u, f"{d[:4]}-{d[4:6]}-{d[6:]}"))
+        return out
+
+    def enumerate(self) -> List[Dict]:
+        items = []
+        for ym, loc in sorted(self.month_sitemaps(START)):
+            items.extend({"url": u, "date": d} for u, d in self.month_urls(ym, loc))
+            log.info("%s sitemap %s: %d urls total", self.host, ym, len(items))
         return items
 
     def recent_ok(self, url: str) -> bool:
@@ -160,7 +203,8 @@ class Ria(Site):
 
     def extract(self, html: str, url: str) -> Tuple[str, Optional[str], str]:
         tm = re.search(r'<(?:div|h1) class="article__title"[^>]*>(.*?)</(?:div|h1)>', html, re.S)
-        title = ctext(tm.group(1)) if tm else re.sub(r"\s+-\s+РИА Новости.*$", "", og_title(html))
+        title = ctext(tm.group(1)) if tm else re.sub(r"\s+-\s+(?:РИА Новости|\d{2}\.\d{2}\.\d{4},\s+Sputnik).*$", "",
+                                                     og_title(html))
         parts = []
         st = re.search(r'<(?:div|h2) class="article__second-title"[^>]*>(.*?)</(?:div|h2)>', html, re.S)
         if st:
@@ -181,6 +225,9 @@ class TassCom(Site):
         "military-operation-in-ukraine", "ukraine-crisis", "middle-east-conflict", "domestic-policy")},
         "economy": ("economy", 100), "society": ("society", 100)}
 
+    earliest = "2014-01-01"  # tass.com sitemaps start 2020-10; 2014-2020 URLs come from the Wayback CDX index
+    SITEMAP_FLOOR = "2020-10-01"
+
     def enumerate(self) -> List[Dict]:
         items = []
         for n in range(10):
@@ -189,7 +236,39 @@ class TassCom(Site):
                 if self.pat.match(u) and lm:
                     items.append({"url": u, "date": lm})
             log.info("tass.com sitemap_news%d: %d urls total", n, len(items))
+        if START < self.SITEMAP_FLOOR:
+            items.extend(self.cdx_items())
         return items
+
+    def cdx_items(self) -> List[Dict]:
+        """Article URLs of the sampled sections from the Wayback CDX URL index, per section and year
+        (START year .. 2020); the URL list is cached in raw/tass_com/cdx/. date = first capture date (an upper
+        bound of the publication date; rows get the page's own date). Articles are fetched live from tass.com."""
+        out = []
+        for sec in self.sample_sections:
+            for y in range(int(START[:4]), int(self.SITEMAP_FLOOR[:4]) + 1):
+                cache = lib.RAW / self.source / "cdx" / f"{sec}_{y}.txt"
+                if cache.exists():
+                    body = cache.read_text("utf-8")
+                else:
+                    q = (f"https://web.archive.org/cdx/search/cdx?url=tass.com/{sec}/&matchType=prefix&from={y}&to={y}"
+                         "&fl=timestamp,original&collapse=urlkey&filter=statuscode:200")
+                    body = lib.fetch(q, min_delay=5, timeout=300, retries=4)
+                    if body is None:
+                        log.warning("tass.com CDX %s %d failed; retried on the next run", sec, y)
+                        continue
+                    cache.parent.mkdir(parents=True, exist_ok=True)
+                    cache.write_text(body, "utf-8")
+                n0 = len(out)
+                for ln in body.splitlines():
+                    parts = ln.split()
+                    if len(parts) != 2:
+                        continue
+                    u = re.sub(r"^https?://(?:www\.)?tass\.com(?::\d+)?", "https://tass.com", parts[1])
+                    if self.pat.match(u):
+                        out.append({"url": u, "date": f"{parts[0][:4]}-{parts[0][4:6]}-{parts[0][6:8]}"})
+                log.info("tass.com CDX %s %d: %d urls", sec, y, len(out) - n0)
+        return out
 
     def recent_ok(self, url: str) -> bool:
         m = self.pat.match(url)
@@ -213,15 +292,30 @@ class RtCom(Site):
     pat = re.compile(r"https://www\.rt\.com/([a-z\-]+)/(\d+)-([a-z0-9\-]+)/?$")
     recent_sections = {"news", "russia"}
     sample_sections = {s: ("core", None) for s in ("news", "russia", "usa", "uk", "africa", "india", "op-ed", "business")}
+    earliest, index = "2005-01-01", "https://www.rt.com/sitemap.xml"
+
+    def year_sitemaps(self) -> List[Tuple[int, str]]:
+        """[(year, sitemap URL)] from the site's sitemap index (sitemap_YYYY.xml and sitemap_YYYY_N.xml parts)."""
+        out = []
+        for loc, _ in _locs(_get(self.index) or ""):
+            m = re.search(r"sitemap_(\d{4})(?:_\d+)?\.xml$", loc)
+            if m and int(m.group(1)) >= int(START[:4]):
+                out.append((int(m.group(1)), loc))
+        return sorted(out)
+
+    def year_items(self) -> List[Dict]:
+        """Items of the yearly sitemaps. lastmod is a regeneration date, not a publication date, so date =
+        min(lastmod, 31 Dec of the sitemap year) and the stratum (`period`) is the sitemap year."""
+        items = []
+        for y, loc in self.year_sitemaps():
+            for u, lm in _locs(_get(loc) or ""):
+                if self.pat.match(u) and lm:
+                    items.append({"url": u, "date": min(lm, f"{y}-12-31"), "period": str(y)})
+            log.info("%s %s: %d urls total", self.source, loc.rsplit("/", 1)[1], len(items))
+        return items
 
     def enumerate(self) -> List[Dict]:
-        items = []
-        for y in range(int(START[:4]), int(time.strftime("%Y")) + 1):
-            sm = _get(f"https://www.rt.com/sitemap_{y}.xml") or ""
-            for u, lm in _locs(sm):
-                if self.pat.match(u) and lm:
-                    items.append({"url": u, "date": lm})
-            log.info("rt.com sitemap_%d: %d urls total", y, len(items))
+        items = self.year_items()
         for u, lm in _locs(_get("https://www.rt.com/newssitemap.xml") or ""):
             if self.pat.match(u):
                 items.append({"url": u, "date": lm or time.strftime("%Y-%m-%d")})
@@ -247,23 +341,39 @@ class RtRu(RtCom):
     pat = re.compile(r"https://russian\.rt\.com/([a-z]+)/(?:news|article)/(\d+)-([a-z0-9\-]+)/?$")
     recent_sections = {"russia", "world"}
     sample_sections = {s: ("core", 15000) for s in ("russia", "world", "ussr", "business")}  # cap per sitemap year
+    earliest, index = "2008-01-01", "https://russian.rt.com/sitemap.xml"
 
     def enumerate(self) -> List[Dict]:
-        items = []
-        for y in range(int(START[:4]), int(time.strftime("%Y")) + 1):
-            sm = _get(f"https://russian.rt.com/sitemap_{y}.xml") or ""
-            for u, lm in _locs(sm):
-                if self.pat.match(u) and lm:
-                    items.append({"url": u, "date": lm, "period": str(y)})
-            log.info("russian.rt.com sitemap_%d: %d urls total", y, len(items))
-        return items
+        return self.year_items()  # all sitemap_YYYY[_N].xml parts (before 2026-10-03 only sitemap_YYYY.xml was read)
 
     def extract(self, html: str, url: str) -> Tuple[str, Optional[str], str]:
         title, d, text = super().extract(html, url)
         return re.sub(r"\s+—\s+РТ на русском.*$", "", title), d, text
 
 
-SITES: Dict[str, Callable[[], Site]] = {"ria_ru": Ria, "tass_com": TassCom, "rt_com": RtCom, "rt_ru": RtRu}
+class SputnikEn(Ria):
+    """sputnikglobe.com: Rossiya Segodnya's English service (ex-sputniknews.com / en.rian.ru); RIA platform."""
+    source, org, lang, rss = "sputnik_en", "Sputnik", "en", "https://sputnikglobe.com/export/rss2/archive/index.xml"
+    host, earliest = "sputnikglobe.com", "2004-01-01"
+    pat = re.compile(r"https://sputnikglobe\.com/(\d{8})/([a-z0-9\-]+?)-?\d+\.html$")
+
+    def recent_ok(self, url: str) -> bool:
+        return False  # no recent slug window: RSS + the all-articles passes cover it
+
+    def month_urls(self, ym: str, loc: str) -> List[Tuple[str, str]]:
+        sm = _get(loc) or ""  # never cached (disk)
+        out = []
+        for u, _ in _locs(sm):
+            mm = self.pat.match(u)
+            if mm:
+                d = mm.group(1)
+                out.append((u, f"{d[:4]}-{d[4:6]}-{d[6:]}"))
+        return out
+
+
+SITES: Dict[str, Callable[[], Site]] = {"ria_ru": Ria, "tass_com": TassCom, "rt_com": RtCom, "rt_ru": RtRu,
+                                        "sputnik_en": SputnikEn}
+RIA_PLATFORM = ("ria_ru", "sputnik_en")
 
 
 # ------------------------------------------------------------------------------------------- run
@@ -287,7 +397,8 @@ def make_parser(site: Site) -> Callable[[Dict], Optional[List[Dict]]]:
         return [{"id": lib.make_id(site.source, url), "country": "RU", "source": site.source, "outlet": "state_media",
                  "org": site.org, "lang": site.lang, "date": d, "url": url, "title": title, "speaker": None,
                  "kind": "article", "text": text, "via": "rss" if it["tier"] == "rss" else ("direct" if via == "cache" else via),
-                 "sample": it["tier"], **site.extra(html, url)}]
+                 "sample": it["tier"], **({"rank_pos": it["rank_pos"]} if "rank_pos" in it else {}),
+                 **site.extra(html, url)}]
     return parse
 
 
@@ -340,37 +451,50 @@ def rss_items(site: Site) -> List[Dict]:
 
 
 def main() -> None:
+    global START, FULL
     ap = argparse.ArgumentParser()
     ap.add_argument("site", choices=sorted(SITES))
     ap.add_argument("--dry-run", action="store_true", help="enumerate and print selection counts only")
-    ap.add_argument("--follow", action="store_true", help="after the sample queue, poll RSS every 30 min forever")
+    ap.add_argument("--follow", action="store_true", help="poll RSS every 30 min (also during the backfill), forever")
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--start", default=START, help="floor date YYYY-MM-DD, or 'earliest' (Site.earliest)")
+    ap.add_argument("--full", action="store_true", help="sampled sections in full (RIA platform: all articles, in passes)")
     a = ap.parse_args()
     site = SITES[a.site]()
-    st = lib.State(f"ru_{a.site}")
+    START = site.earliest if a.start == "earliest" else a.start
+    FULL = a.full
+    st = BigState(f"ru_{a.site}")
     cut = recent_cutoff(a.days)
     parse = make_parser(site)
+    rss_fn = (lambda: rss_items(site)) if a.follow else None
     if a.follow and not a.dry_run:  # pick up the newest items first
         run_queue(rss_items(site), st, parse, "RU", lambda r: r["source"])
-    recent, sample, info = select(site, site.enumerate(), cut)
-    have = lib.existing_ids(lib.docs_path("RU", site.source))
-    todo_s = [i for i in sample if lib.make_id(site.source, i["url"]) not in have and not st.is_done(i["key"])]
-    n_sel = sum(v[1] for v in info["strata"].values())
-    sel = {"rule": "topic-neutral section/random sample (2026-10-02)", "seed": SAMPLE_SEED,
-           "enumerated": info["enumerated"], "recent": len(recent), "cutoff": cut,
-           "sample_selected": n_sel, "sample_todo": len(todo_s),
-           "sample_by_tier": {t: sum(i["tier"] == t for i in sample) for t in ("section", "section_random", "random")}}
-    log.info("%s selection: %s", a.site, json.dumps(sel))
-    if a.dry_run:
-        print(json.dumps(sel))
-        return
-    st["selection"] = sel
-    st.save()
-    queue = recent + todo_s
-    if a.limit:
-        queue = queue[:a.limit]
-    run_queue(queue, st, parse, "RU", lambda r: r["source"])
+    if a.site in RIA_PLATFORM and (FULL or a.site == "sputnik_en"):
+        if a.dry_run:
+            print(json.dumps({"months": len(site.month_sitemaps(START)), "start": START}))
+            return
+        run_passes(site, st, parse, START, sample_rank, rss_fn, limit=a.limit)
+    else:
+        recent, sample, info = select(site, site.enumerate(), cut)
+        have = lib.existing_ids(lib.docs_path("RU", site.source))
+        todo_s = [i for i in sample if lib.make_id(site.source, i["url"]) not in have and not st.is_done(i["key"])]
+        n_sel = sum(v[1] for v in info["strata"].values())
+        sel = {"rule": "topic-neutral section/random sample (2026-10-02)" + (", --full" if FULL else ""),
+               "seed": SAMPLE_SEED, "start": START, "enumerated": info["enumerated"], "recent": len(recent),
+               "cutoff": cut, "sample_selected": n_sel, "sample_todo": len(todo_s),
+               "sample_by_tier": {t: sum(i["tier"] == t for i in sample) for t in ("section", "section_random", "random")}}
+        log.info("%s selection: %s", a.site, json.dumps(sel))
+        if a.dry_run:
+            print(json.dumps(sel))
+            return
+        st["selection"] = sel
+        st.save()
+        queue = recent + todo_s
+        del sample, todo_s
+        if a.limit:
+            queue = queue[:a.limit]
+        run_queue(with_rss(queue, rss_fn), st, parse, "RU", lambda r: r["source"], batch=20, save_every=50)
     while a.follow:
         time.sleep(1800)
         run_queue(rss_items(site), st, parse, "RU", lambda r: r["source"])

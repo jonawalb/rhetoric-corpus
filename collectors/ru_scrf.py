@@ -3,12 +3,18 @@ Russian. Article ids are sequential: start at the newest id on the listing page 
 40 consecutive ids are older than 2021-01-01 (missing ids are skipped). No robots.txt (HTTP 404 on
 2026-10-02 = no rules); >= 6 s between requests. Rows -> docs/RU/scrf_ru.jsonl.
 
-    uv run --project ~/Projects/rhetoric-corpus python collectors/ru_scrf.py
+    uv run --project ~/Projects/rhetoric-corpus python collectors/ru_scrf.py [--start YYYY-MM-DD|earliest]
+
+--start (added 2026-10-03; default 2021-01-01, earliest = 2000-01-01): when the floor is lowered, the walk resumes
+below the id where the earlier run stopped, and the ids that run checked and rejected as too old (the last
+~40 before it stopped) are re-fetched.
 """
 from __future__ import annotations
 
+import argparse
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -18,6 +24,7 @@ from ru_common import balanced_div, ctext, robots_ok, ru_date  # noqa: E402
 
 BASE = "http://www.scrf.gov.ru"
 START = "2021-01-01"
+EARLIEST = "2000-01-01"
 SPEAKERS = [(r"Шойгу", "Shoigu"), (r"Патрушев", "Patrushev"), (r"Медведев", "Medvedev"), (r"Венедиктов", "Venediktov"),
             (r"Путин|Президент", "Putin"), (r"Гребенкин", "Grebenkin"), (r"Вахрукова|Вахруков", "Vakhrukov")]
 log = lib.setup_logging("ru_scrf")
@@ -29,6 +36,8 @@ def parse(tid: int) -> Optional[Dict]:
         return None
     html = lib.fetch(url, min_delay=6, retries=2)
     if not html:
+        if lib.fetch.last.get("status") not in (404, 410):
+            return None  # timeout / outage: retried by main(), not marked done
         return {"missing": True, "status": lib.fetch.last.get("status")}
     t = re.search(r'<h1 class="read_title[^"]*">(.*?)</h1>', html, re.S)
     m = re.search(r'class="read_meta"><span>(.*?)</span>', html, re.S)
@@ -48,7 +57,20 @@ def parse(tid: int) -> Optional[Dict]:
 
 
 def main() -> None:
+    global START
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--start", default=START)
+    a = ap.parse_args()
+    START = EARLIEST if a.start == "earliest" else a.start
     st = lib.State("ru_scrf")
+    if (st.get("floor") or "2021-01-01") > START:  # deepen: re-check ids rejected as too old by the earlier run
+        have = {i.split(":", 1)[1] for i in lib.existing_ids(lib.docs_path("RU", "scrf_ru"))}
+        low = min((int(i) for i in have), default=0)
+        for tid in range(max(1, low - 200), low):
+            if st.is_done(str(tid)):
+                st._done.discard(str(tid))
+        st["complete"] = False
+    st["floor"] = START
     top = st.get("top")
     if not top:
         html = lib.fetch(f"{BASE}/news/allnews/", min_delay=6) or ""
@@ -56,11 +78,16 @@ def main() -> None:
         top = max(ids)
         st["top"] = top
     old_run, buf = 0, []
-    for tid in range(top, 0, -1):
+    tid = top + 1
+    while tid > 1:
+        tid -= 1
         if st.is_done(str(tid)):
             continue
         r = parse(tid)
-        if r is None:
+        if r is None:  # site or its robots.txt unreachable: wait and retry the same id (never skip it)
+            log.warning("scrf.gov.ru unreachable at id %d; retrying in 5 min", tid)
+            time.sleep(300)
+            tid += 1
             continue
         if r.get("missing"):
             log.info("id %d missing (%s)", tid, r["status"])

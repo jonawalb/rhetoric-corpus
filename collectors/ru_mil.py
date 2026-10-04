@@ -8,10 +8,15 @@ item dated >= 2021 with > 80 chars of text is stored (`sample: all`), daily SMO 
 have no `sample` field; ids checked and rejected under that rule are re-fetched (state key "all:<id>").
 Rows -> docs/RU/mil_ru.jsonl.
 
-    uv run --project ~/Projects/rhetoric-corpus python collectors/ru_mil.py
+    uv run --project ~/Projects/rhetoric-corpus python collectors/ru_mil.py [--start YYYY-MM-DD|earliest]
+
+--start (added 2026-10-03; default 2021-01-01; earliest = 2010-01-01): a lower floor adds the CDX captures of the
+years before 2021 (one extra CDX query, cached in state as "cdx_old:<year>"); ids are still processed newest first,
+so the older ids follow the 2021-2025 queue.
 """
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -22,6 +27,7 @@ import lib  # noqa: E402
 from ru_common import ctext, dmy  # noqa: E402
 
 START = "2021-01-01"
+EARLIEST = "2010-01-01"
 log = lib.setup_logging("ru_mil")
 
 
@@ -45,11 +51,42 @@ def captures(st: lib.State) -> List[tuple]:
     return out
 
 
+def old_captures(st: lib.State) -> List[tuple]:
+    """CDX captures from START's year up to 2020 (to=2020) for a lowered floor; [] when START >= 2021."""
+    if START >= "2021-01-01":
+        return []
+    key = f"cdx_old:{START[:4]}"
+    if st.get(key) is None:
+        q = ("https://web.archive.org/cdx/search/cdx?url=function.mil.ru/news_page/country/more.htm&matchType=prefix"
+             f"&from={START[:4]}&to=2020&collapse=urlkey&fl=timestamp,original&filter=statuscode:200")
+        body = lib.fetch(q, min_delay=8, timeout=600, retries=6)
+        if body is None:
+            log.warning("old CDX query failed; retried next run")
+            return []
+        caps = {}
+        for ln in body.splitlines():
+            parts = ln.split()
+            m = re.search(r"more\.htm\?id=(\d+)@egNews&?$", parts[1]) if len(parts) == 2 else None
+            if m:
+                caps.setdefault(int(m.group(1)), (parts[0], parts[1]))
+        st[key] = [(n, ts, orig) for n, (ts, orig) in sorted(caps.items(), reverse=True)]
+        st.save()
+        log.info("old CDX (%s-2020): %d MoD news ids", START[:4], len(st[key]))
+    return [tuple(x) for x in st[key]]
+
+
 def main() -> None:
+    global START
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--start", default=START)
+    START = (lambda v: EARLIEST if v == "earliest" else v)(ap.parse_args().start)
     st = lib.State("ru_mil")
     buf = []
     have = lib.existing_ids(lib.docs_path("RU", "mil_ru"))
-    for n, ts, orig in captures(st):
+    caps = captures(st)
+    seen = {n for n, _, _ in caps}
+    caps += [c for c in old_captures(st) if c[0] not in seen]
+    for n, ts, orig in caps:
         key = f"all:{n}"  # bare str(n) keys = checked under the old keyword rule
         if st.is_done(key) or lib.make_id("mil_ru", str(n)) in have:
             continue

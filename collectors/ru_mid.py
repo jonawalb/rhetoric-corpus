@@ -6,7 +6,14 @@ Phase 1 walks each section's listing (?PAGEN_1=N, allowed by robots) back to 202
 item list in state; phase 2 fetches items newest-first (2024+ first, then 2021-2023).
 Resumable: re-run the same command. Polite: mid.ru is spaced >= 10 s (lib.HOST_DELAY).
 
-    uv run --project ~/Projects/rhetoric-corpus python collectors/ru_mid.py [--list-only] [--limit N]
+    uv run --project ~/Projects/rhetoric-corpus python collectors/ru_mid.py [--list-only] [--limit N] [--start D|earliest]
+
+Added 2026-10-03:
+  * sections /ru/foreign_policy/news/ and /en/foreign_policy/news/ (all MFA news items: statements, meetings,
+    telephone conversations, comments; ~25k URLs in the Wayback CDX index for RU), kind "news".
+  * --start (default 2021-01-01; earliest = 2000-01-01, i.e. whatever the new mid.ru serves). When the floor is
+    lowered, items checked earlier and rejected only for their date are re-parsed from the raw/mid/ page
+    cache (no new request).
 """
 from __future__ import annotations
 
@@ -22,6 +29,7 @@ from ru_common import balanced_div, ctext, dmy, robots_ok, run_queue  # noqa: E4
 
 BASE = "https://mid.ru"
 START = "2021-01-01"
+EARLIEST = "2000-01-01"
 # (lang, path, default kind, default speaker)
 SECTIONS = [
     ("ru", "/ru/press_service/spokesman/briefings/", "briefing", "Zakharova"),
@@ -36,6 +44,8 @@ SECTIONS = [
     ("en", "/en/press_service/spokesman/comments/", "statement", None),
     ("ru", "/ru/press_service/spokesman/official_statement/", "statement", None),
     ("en", "/en/press_service/spokesman/official_statement/", "statement", None),
+    ("ru", "/ru/foreign_policy/news/", "news", None),
+    ("en", "/en/foreign_policy/news/", "news", None),
 ]
 SPEAKERS = [  # (regex on title, canonical name)
     (r"Захаров|Zakharova", "Zakharova"), (r"Лавров|Lavrov", "Lavrov"), (r"Рябков|Ryabkov", "Ryabkov"),
@@ -139,10 +149,11 @@ def parse(it: Dict) -> Optional[List[Dict]]:
         return []
     rid = re.search(r"/(\d+)/?$", url)
     cache = lib.RAW / "mid" / it["lang"] / f"{rid.group(1) if rid else lib.make_id('x', url).split(':')[1]}.html"
-    html = lib.fetch(url, min_delay=10, cache=cache)
+    # pages cached by earlier runs are re-read; new pages are not cached any more (disk; 2026-10-03)
+    html = lib.fetch(url, min_delay=10, cache=cache if cache.exists() else None)
     if not html:
         log.warning("fetch failed %s (status %s)", url, lib.fetch.last.get("status"))
-        return None
+        return [] if lib.fetch.last.get("status") in (404, 410) else None
     inner = balanced_div(html, 'class="text article-content"')
     if inner is None:
         log.warning("no article body %s", url)
@@ -174,11 +185,26 @@ KNOWN: Dict[str, Dict] = {}
 
 
 def main() -> None:
+    global START
     ap = argparse.ArgumentParser()
     ap.add_argument("--discover-only", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--start", default=START)
     a = ap.parse_args()
+    START = EARLIEST if a.start == "earliest" else a.start
     st = lib.State("ru_mid")
+    if (st.get("floor") or "2021-01-01") > START:  # re-parse cached pages rejected for their date only
+        have = lib.existing_ids(lib.docs_path("RU", "mid_ru")) | lib.existing_ids(lib.docs_path("RU", "mid_en"))
+        n = 0
+        for it in (st.get("items") or {}).values():
+            src = "mid_ru" if it["lang"] == "ru" else "mid_en"
+            cache = lib.RAW / "mid" / it["lang"] / f"{it['id']}.html"
+            if st.is_done(it["url"]) and cache.exists() and lib.make_id(src, str(it["id"])) not in have:
+                st._done.discard(it["url"])
+                n += 1
+        log.info("floor lowered to %s: %d cached items queued for re-parse", START, n)
+    st["floor"] = START
+    st.save()
     KNOWN.update(discover(st))
     if a.discover_only:
         return
