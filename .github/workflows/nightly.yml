@@ -104,12 +104,16 @@ jobs:
         continue-on-error: true
         timeout-minutes: 100
         run: |
-          if [ "${{ steps.when.outputs.weekly }}" = true ]; then B=""; else B="--budget 2400"; fi
-          uv run --no-sync python -m scripts.semantic.run $B 2>&1 | sed '/Loading weights/d' | tail -40
+          # Nightly = score new documents only. Retraining the tone model (teacher/train/active stages) runs the large
+          # NLI teacher and is far too slow on CPU runners: do it manually on a fast machine. Embed and score are
+          # time-boxed and resume where they stopped on the next run.
+          if [ "${{ steps.when.outputs.weekly }}" = true ]; then B="--budget 2700"; else B="--budget 1500"; fi
+          uv run --no-sync python -m scripts.semantic.run --stage sync,targets,embed,score,topics,trends,echo,brief $B 2>&1 \
+            | sed '/Loading weights/d' | tail -40
 
       - name: Trends data
         id: trends
-        if: always() && steps.semantic.outcome == 'success'
+        if: always() && steps.index.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 15
         run: uv run --no-sync python publish/build_trends.py
