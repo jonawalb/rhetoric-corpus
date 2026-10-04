@@ -77,6 +77,8 @@ class Site:
     org: str
     min_delay: float = 4.0
     extra_hosts: Tuple[str, ...] = field(default_factory=tuple)
+    outlet: str = "state_media"           # "media" for outlets that are not state-owned/-run
+    gregorian: bool = False               # newsstudio: yearly indexes named by Gregorian (not Solar Hijri) year
 
 
 SITES: Dict[str, Site] = {s.name: s for s in (
@@ -104,6 +106,23 @@ SITES: Dict[str, Site] = {s.name: s for s in (
          "Tasnim News Agency"),
     Site("nournews", "https://nournews.ir", "nour", {"fa": "ir_nournews_fa", "en": "ir_nournews_en"},
          "Nour News (close to the Supreme National Security Council)"),
+    # Added 2026-10-04 (verified with --dry-run on live pages first).
+    Site("khabaronline", "https://www.khabaronline.ir", "newsstudio", {"fa": "ir_khabaronline_fa"},
+         "Khabar Online (private, Larijani-aligned)", outlet="media"),
+    Site("hamshahri", "https://www.hamshahrionline.ir", "newsstudio", {"fa": "ir_hamshahri_fa"},
+         "Hamshahri Online (Tehran Municipality)", outlet="media"),
+    Site("abna", "https://fa.abna24.com", "newsstudio", {"fa": "ir_abna_fa"},
+         "ABNA (Ahl al-Bayt World Assembly)"),
+    Site("abna_en", "https://en.abna24.com", "newsstudio", {"en": "ir_abna_en"},
+         "ABNA (Ahl al-Bayt World Assembly)", gregorian=True),
+    Site("hawzah", "https://www.hawzahnews.com", "newsstudio", {"fa": "ir_hawzah_fa"},
+         "Hawzah News Agency (Seminary Management Center)"),
+    Site("quds", "https://www.qudsonline.ir", "newsstudio", {"fa": "ir_quds_fa"},
+         "Quds daily (Astan Quds Razavi)"),
+    Site("ettelaat", "https://www.ettelaat.com", "newsstudio", {"fa": "ir_ettelaat_fa"},
+         "Ettelaat (Leader-appointed management)"),
+    Site("rasa", "https://rasanews.ir", "didgah", {"fa": "ir_rasa_fa", "en": "ir_rasa_en"},
+         "Rasa News Agency (Qom seminary)", outlet="media"),
 )}
 
 
@@ -118,6 +137,12 @@ class Fetcher:
 
     def get(self, url: str, cache: Optional[Path] = None) -> Tuple[Optional[str], int]:
         if not robots_ok(url):
+            p = urllib.parse.urlsplit(url)
+            if f"{p.scheme}://{p.netloc}" in lib._robots_retry:  # robots.txt unreachable: transient, retry later
+                self.log.warning("%s unreachable; backing off %ds (not marked done) %s", p.netloc,
+                                 lib.TRANSIENT_BACKOFF_S, url)
+                time.sleep(lib.TRANSIENT_BACKOFF_S)
+                return None, 0
             self.log.warning("robots.txt disallows %s", url)
             return None, -1
         body = lib.fetch(url, min_delay=self.delay, cache=cache, timeout=90)
@@ -144,6 +169,13 @@ class Fetcher:
 # --------------------------------------------------------------------------------------------- sitemaps
 def locs(xml: str) -> Tuple[bool, List[Tuple[str, str]]]:
     """(is_index, [(loc, lastmod)]) of a sitemap index or urlset."""
+    if xml.lstrip().startswith("{"):  # some NewsStudio sites serve old day leaves as JSON {"urls": [{"loc": ...}]}
+        try:
+            data = json.loads(xml)
+        except ValueError:
+            return False, []
+        return False, [(u["loc"], u.get("lastmode") or u.get("lastmod") or "") for u in data.get("urls") or []
+                       if isinstance(u, dict) and u.get("loc")]
     is_index = "<sitemapindex" in xml[:2000]
     out = []
     for blk in re.findall(r"<(?:url|sitemap)>(.*?)</(?:url|sitemap)>", xml, re.S):
@@ -171,11 +203,11 @@ def _nour_day(url: str) -> str:
         d = json.loads(base64.urlsafe_b64decode(b + "=" * (-len(b) % 4)))
     except ValueError:
         return ""
-    return d.get("date", "") if d.get("model") == "newsstudioDateRange" else ""
+    return d.get("date", "") if isinstance(d, dict) and d.get("model") == "newsstudioDateRange" else ""
 
 
 def newest_first(children: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
-    if children and "nournews.ir/sitemap/" in children[0][0]:
+    if children and any(_nour_day(u) for u, _ in children):
         return sorted(((u, lm) for u, lm in children if _nour_day(u)), key=lambda c: _nour_day(c[0]), reverse=True)
     if children and all(lm[:4].isdigit() for _, lm in children):
         return sorted(children, key=lambda c: (c[1][:19], _nums(c[0])), reverse=True)
@@ -199,10 +231,10 @@ def archive_roots(site: Site, lang: str, fx: Fetcher) -> List[str]:
         return [f"{site.base}/{lang}/{lang}_sitemap.xml"]
     if site.cms == "nour":
         return [f"{site.base}/sitemap.xml"]
-    # newsstudio: current year in /sitemap/all/, past Jalali years in /sitemap/<year>/
-    jy = datetime.now(timezone.utc).year - 621
-    return [f"{site.base}/sitemap/all/sitemap.xml"] + [f"{site.base}/sitemap/{y}/sitemap.xml"
-                                                        for y in range(jy, 1375, -1)]
+    # newsstudio: current year in /sitemap/all/, past (Jalali or Gregorian) years in /sitemap/<year>/
+    now = datetime.now(timezone.utc).year
+    years = range(now, 1996, -1) if site.gregorian else range(now - 621, 1375, -1)
+    return [f"{site.base}/sitemap/all/sitemap.xml"] + [f"{site.base}/sitemap/{y}/sitemap.xml" for y in years]
 
 
 def recent_leaves(site: Site, lang: str) -> List[str]:
@@ -295,6 +327,8 @@ def parse_didgah(html: str, lang: str) -> Optional[Dict]:
     pd = re.search(r'news_pdate_c[^>]*>(.*?)</div>', html, re.S)
     date = parse_date(_meta(html, "article:published_time"), _ctext(pd.group(1)) if pd else "", lang)
     body = _div_text(html, r'<(?:div|section)[^>]*class="body(?:\s[^"]*)?"')
+    if not body:  # e.g. rasanews: class="body-news body"
+        body = _div_text(html, r'<(?:div|section)[^>]*class="[^"]*\sbody(?:\s[^"]*)?"')
     lead = _div_text(html, r'<div[^>]*class="subtitle(?:\s[^"]*)?"')
     kicker = _div_text(html, r'<div[^>]*class="rutitr(?:\s[^"]*)?"')
     path = balanced_div(html, 'class="news_path') or ""
@@ -403,7 +437,7 @@ class Runner:
                 print("SKIP", url, art and {k: (v[:80] if isinstance(v, str) else v) for k, v in art.items()})
             return True
         src = self.site.langs[lang]
-        row = {"id": lib.make_id(src, m.group(1)), "country": "IR", "source": src, "outlet": "state_media",
+        row = {"id": lib.make_id(src, m.group(1)), "country": "IR", "source": src, "outlet": self.site.outlet,
                "org": self.site.org, "lang": lang, "date": art["date"], "url": lib.fetch.last.get("url") or url,
                "title": art["title"], "speaker": None, "kind": "article", "text": text, "via": "direct",
                "fetched": lib.now_iso(), "section": art["section"], "kicker": art["kicker"], "site": self.site.name}

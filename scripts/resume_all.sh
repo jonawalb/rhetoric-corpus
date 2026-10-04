@@ -121,3 +121,26 @@ run cn_qiushi cn_qiushi.py --follow
 run cn_embassy cn_embassy.py --follow
 # China Coast Guard: live site behind CloudWAF (HTTP 418), Wayback copies only
 run cn_ccg cn_ccg.py --follow
+# Remaining RU/CN/IR sources (added 2026-10-04)
+run ir_media_khabaronline ir_media.py khabaronline --follow
+run ir_media_hamshahri ir_media.py hamshahri --follow
+run ir_media_abna ir_media.py abna --follow
+run ir_media_abna_en ir_media.py abna_en --follow
+run ir_media_hawzah ir_media.py hawzah --follow
+run ir_media_quds ir_media.py quds --follow
+run ir_media_ettelaat ir_media.py ettelaat --follow
+run ir_media_rasa ir_media.py rasa --follow
+run ir_parstoday ir_more.py parstoday --follow
+run ir_irannewspaper ir_more.py irannewspaper --follow
+run cn_media_chinanews cn_media.py chinanews --follow
+run cn_media_ecns cn_media.py ecns --follow
+run cn_media_cctv cn_media.py cctv --follow
+run cn_media_cctv_en cn_media.py cctv_en --follow
+run cn_media_xwlb cn_media.py xwlb --follow
+run cn_media_huanqiu cn_media.py huanqiu --follow
+run cn_media_guancha cn_media.py guancha --follow
+run ru_tvzvezda_ru ru_more_media.py tvzvezda_ru --follow
+# redstar.ru: Crawl-delay 60 honored (1 request/min, 100 posts per WP REST page)
+run ru_redstar_ru ru_more_media.py redstar_ru --follow
+# archive.government.ru (2008-05 -> 2013-05): static, one downward id walk, resumes from its cursor
+run ru_government_archive_ru ru_more_media.py government_archive_ru
