@@ -80,6 +80,8 @@ CHAINS: List[Chain] = [
     chain("us_state", "us_state_briefings.py"),
     chain("us_whitehouse_biden", "us_whitehouse.py --site biden"),
     chain("us_whitehouse", "us_whitehouse.py --site current"),
+    chain("us_dod", "us_dod.py"),
+    chain("us_usun", "us_usun.py"),
     chain("tw_ey_en", "tw_ey.py --lang en"),
     chain("tw_ey_zh", "tw_ey.py --lang zh"),
     chain("tw_mofa_en", "tw_mofa.py --lang en"),
