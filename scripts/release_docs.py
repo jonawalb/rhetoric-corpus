@@ -147,7 +147,7 @@ def render_readme(ctx: Dict[str, Any]) -> str:
         "metadata, word counts and text hashes only. The same applies to official-outlet sources that publish "
         "journalism: " + "; ".join(f"`{k}` ({v})" for k, v in N.METADATA_ONLY_SOURCES.items()) + " "
         + N.FORWARDED_NOTE + "\n"
-        "- Access on Zenodo is open.",
+        "- Access on Zenodo is restricted: approved users may not redistribute the raw files.",
         "## Contact", f"{N.AUTHOR} ({N.AFFILIATION}), ORCID {N.ORCID}.",
     ]
     return "\n\n".join(parts) + "\n"
@@ -249,7 +249,13 @@ def zenodo_metadata(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "publication_date": ctx["build_date_local"],
         "creators": [{"name": N.AUTHOR, "affiliation": N.AFFILIATION, "orcid": N.ORCID}],
         "description": desc,
-        "access_right": "open",
+        "access_right": "restricted",
+        "access_conditions": (
+            "Access is granted on request to academic researchers and government analysts. Please state your "
+            "name, institutional or state affiliation (agency or organisation), and intended use. Approved users "
+            "may use the files for research and analysis within their organisation but may not redistribute the "
+            "raw files or republish full texts. Official texts remain the property of their issuing governments; "
+            "media texts are not included."),
         "license": "cc-by-4.0",
         "keywords": ["political rhetoric", "official statements", "state media", "foreign ministry",
                      "multilingual corpus", "text as data", "international relations", "public diplomacy",

@@ -155,7 +155,7 @@ def test_docs_manifest_and_checksums(corpus):
     codebook = (out / "CODEBOOK.md").read_text(encoding="utf-8")
     assert "`wayback_timestamp`" in codebook and "Solar Hijri" in codebook and "Zakharova (1)" in codebook
     z = json.loads((out / "ZENODO_METADATA.json").read_text(encoding="utf-8"))["metadata"]
-    assert z["upload_type"] == "dataset" and z["access_right"] == "open" and "access_conditions" not in z
+    assert z["upload_type"] == "dataset" and z["access_right"] == "restricted" and z["access_conditions"]
     assert z["creators"][0] == {"name": "Walberg, Jonathan", "affiliation": "University of Virginia",
                                 "orcid": "0009-0000-2065-8481"}
     for line in (out / "SHA256SUMS").read_text().splitlines():
