@@ -30,6 +30,14 @@ def doc_frame(con: sqlite3.Connection) -> pd.DataFrame:
         f" {', '.join('t.' + x for x in DIMS)}, t.nsent FROM docs d JOIN doc_tone t USING(doc_id)"
         " WHERE d.present=1 AND d.date IS NOT NULL AND t.nsent > 0", con)
     df = df[~df["sample"].isin(EXCLUDED_SAMPLES)].copy()
+    # A mis-parsed date (e.g. a calendar offset giving 2569) would push the "latest week" centuries ahead and empty
+    # every recent window: drop documents dated after tomorrow and report them.
+    tomorrow = (pd.Timestamp.utcnow().normalize() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    future = df["date"] > tomorrow
+    if future.any():
+        bad = df.loc[future].groupby("source")["date"].agg(["count", "max"])
+        logger.warning("dropping %d future-dated docs from trends: %s", int(future.sum()), bad.to_dict("index"))
+        df = df[~future]
     df["esc_balance"] = df["escalation"] - df["deescalation"]
     df["stream"] = df["source"] + "|" + df["lang"].fillna("?") + "|" + df["sample"].fillna("all")
     df["week"], df["month"] = stats.week_of(df["date"]), stats.month_of(df["date"])
