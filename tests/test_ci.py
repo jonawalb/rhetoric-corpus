@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pytest
 import signal
 import subprocess
 import sys
@@ -121,3 +122,35 @@ def test_merge_jsonl_unions_by_id(tmp_path):
     local.write_text('{"id": "a:1"}\n{"id": "a:2"}\n{"id": "a:4"}\n{"id": "a:5", "x')
     assert store_sync.merge_jsonl(local, stored) == 1
     assert local.read_text() == '{"id": "a:1"}\n{"id": "a:2"}\n{"id": "a:3"}\n{"id": "a:4"}\n'
+
+
+def test_store_commit_squashes_history_once_when_storage_is_full():
+    S = store_sync
+    calls = []
+
+    class Hub:
+        def super_squash_history(self, repo, **kw):
+            calls.append(("squash", repo))
+
+    def commit(repo, **kw):
+        calls.append(("commit", repo))
+        if calls.count(("commit", repo)) == 1:
+            raise RuntimeError("Private repository storage limit reached, please upgrade your plan")
+        return "ok"
+
+    assert S.squash_on_storage_limit(Hub(), "u/store", commit, commit_message="m") == "ok"
+    assert calls == [("commit", "u/store"), ("squash", "u/store"), ("commit", "u/store")]
+
+
+def test_store_commit_does_not_squash_on_other_errors():
+    S = store_sync
+
+    class Hub:
+        def super_squash_history(self, repo, **kw):
+            raise AssertionError("must not squash")
+
+    def commit(repo, **kw):
+        raise RuntimeError("401 Unauthorized")
+
+    with pytest.raises(RuntimeError, match="401"):
+        S.squash_on_storage_limit(Hub(), "u/store", commit)

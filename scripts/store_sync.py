@@ -146,9 +146,30 @@ def _in_only(rel: str, only: List[str] | None) -> bool:
     return not only or any(rel.startswith(o.rstrip("/") + "/") for o in only)
 
 
+STORAGE_LIMIT = "storage limit"  # Hub error text when the account's private storage is full
+
+
+def squash_on_storage_limit(hf, repo: str, commit, *a, **kw):
+    """Run commit(repo, ...); if the Hub refuses it because private storage is full, squash the store's history
+    (old file versions are what fill it; the files on main are kept) once and retry."""
+    try:
+        return commit(repo, *a, **kw)
+    except Exception as e:  # noqa: BLE001  huggingface_hub raises BadRequestError; match on the message
+        if STORAGE_LIMIT not in str(e).lower():
+            raise
+        print(f"store: private storage limit reached; squashing {repo} history and retrying", flush=True)
+        hf.super_squash_history(repo, repo_type="dataset", commit_message="store: squash history (storage limit)")
+        return commit(repo, *a, **kw)
+
+
 def api():
     from huggingface_hub import HfApi
-    return HfApi()
+
+    class StoreApi(HfApi):
+        def create_commit(self, repo_id, *a, **kw):
+            return squash_on_storage_limit(self, repo_id, super().create_commit, *a, **kw)
+
+    return StoreApi()
 
 
 def _raise_layout(n: int) -> None:
