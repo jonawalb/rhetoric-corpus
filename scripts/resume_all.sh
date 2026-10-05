@@ -14,6 +14,7 @@ run by_president_en by_president.py --lang en
 run by_president_ru by_president.py --lang ru
 run in_mea in_mea.py
 run kp_rodong_en kp_rodong_en.py
+run kp_kcna_en kp_kcna_en.py
 run pk_mofa pk_mofa.py
 run ru_kremlin ru_kremlin.py --start earliest --events
 run ru_kremlin_en ru_kremlin.py --lang en --start earliest --events
@@ -30,6 +31,8 @@ run ru_telegram_live ru_telegram.py --follow
 run us_state us_state_briefings.py
 run us_whitehouse_biden us_whitehouse.py --site biden
 run us_whitehouse us_whitehouse.py --site current
+run us_dod us_dod.py
+run us_usun us_usun.py
 # ISPR sits behind Cloudflare: retry via Wayback every 30 minutes.
 pgrep -f "collectors/pk_ispr.py" >/dev/null || { nohup zsh -c 'while true; do uv run --project . python collectors/pk_ispr.py; sleep 1800; done' >> logs/pk_ispr.log 2>&1 & echo "started: pk_ispr loop"; }
 # Taiwan (added 2026-10-02 night)

@@ -11,6 +11,11 @@ charset (gb18030 superset). No robots.txt (404 -> no rules). >= 6 s between requ
 createPageHTML(n, ...) pages: index.htm, index_1.htm ... index_{n-1}.htm, all walked on every pass (cheap), so the
 first pass is the full backfill and later passes (--follow, every 6 h) pick up new items.
 
+The CMS keeps only the newest ~600-900 items per section in its listings (wyly reaches back only to 2023-10), so
+every pass also enumerates each section's URLs through the Wayback CDX (one listing request per section; the
+pages themselves are fetched live — 2021 t-pages still load — with the Wayback copy as fallback). Added 2026-10-05:
+before that tao_cn_live held no wyly statement before 2023-10 (Wayback lists ~550 for 2021-2023).
+
 www.taiwan.cn mirrors the same conference transcripts (not collected: duplicates of the TAO originals).
 
     uv run --project ~/Projects/rhetoric-corpus python collectors/cn_tao.py [--follow] [--sections xwfbh,wyly]
@@ -40,9 +45,9 @@ log = lib.setup_logging("cn_tao")
 ITEM = re.compile(r'href="((?:https://www\.gwytb\.gov\.cn/xwdt/|\./)[^"]*?t(\d{8})_(\d+)\.htm)"[^>]*?(?:title="([^"]*)")?')
 
 
-def get_text(url: str) -> Optional[str]:
+def get_text(url: str, wayback: bool = False) -> Optional[str]:
     """Page as text, decoded by its declared charset (GBK pages -> gb18030)."""
-    body = lib.fetch(url, min_delay=DELAY, binary=True)
+    body = lib.fetch(url, min_delay=DELAY, binary=True, use_wayback_fallback=wayback)
     if body is None:
         return None
     head = body[:3000].decode("ascii", "ignore").lower()
@@ -77,6 +82,18 @@ def listing(path: str) -> List[Tuple[str, str]]:
     return list(out.items())
 
 
+def cdx_items(path: str) -> List[Tuple[str, str]]:
+    """[(https article url, url date)] of every Wayback-captured article URL under one section."""
+    out: Dict[str, str] = {}
+    for orig, _ts in cc.cdx_urls("gwytb.gov.cn/xwdt/" + path, r"/\d{6}/t\d{8}_\d+\.htm$"):
+        m = re.search(r"/xwdt/(.+/\d{6}/t(\d{8})_\d+\.htm)$", orig)
+        if m and m.group(1).startswith(path):
+            d8 = m.group(2)
+            out.setdefault(BASE + m.group(1), f"{d8[:4]}-{d8[4:6]}-{d8[6:]}")
+    log.info("%s: %d URLs in the Wayback CDX", path, len(out))
+    return sorted(out.items(), key=lambda kv: kv[1], reverse=True)
+
+
 def parse(html: str) -> Optional[Dict]:
     h1 = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.S)
     title = lib.clean_html(h1.group(1)) if h1 else cc.title_tag(html)
@@ -101,12 +118,15 @@ def run_pass(sink: cc.Sink, st: lib.State, sections: List[str]) -> int:
     before = sink.added + len(sink.buf)
     for name in sections:
         path, kind = SECTIONS[name]
-        for url, d_url in listing(path):
+        live = listing(path)
+        seen = {u for u, _ in live}
+        items = [(u, d, False) for u, d in live] + [(u, d, True) for u, d in cdx_items(path) if u not in seen]
+        for url, d_url, from_cdx in items:
             num = re.search(r"t(\d{8}_\d+)\.htm$", url).group(1)
             doc_id = lib.make_id(SOURCE, f"{num}:zh")
             if sink.has(doc_id) or st.is_done(url):
                 continue
-            html = get_text(url)
+            html = get_text(url, wayback=from_cdx)
             if html is None:
                 log.warning("fetch failed %s (status %s)", url, lib.fetch.last.get("status"))
                 if lib.fetch.last.get("status") in (404, 410):

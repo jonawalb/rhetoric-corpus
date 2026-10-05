@@ -11,6 +11,18 @@ https on both hosts serves a certificate for another name, so the site is used o
 use). No robots.txt (404 -> no rules). >= 6 s between requests. The CMS caps every listing at ~10 pages, so the
 live archive reaches ~2018 (statements), ~2024 (conference items), 2026-06 (EN); older years live only at
 pre-2023 URLs that now 404 -> --wayback enumerates them through the Wayback CDX (raw copies, `via: wayback`).
+The pager script announces N pages but serves one more (index_N.html), which is probed too.
+
+The three spokesperson channels (memory note "MND has three channels") are all walked: 例行记者会 lxjzh_246940,
+例行新闻发布 yzxwfb, 发言人谈话和答记者问 fyrthhdjzw (plus the special-conference ztjzh and per-conference lxjzhzt
+trees). English 2021-2025: the 2023-25 site's spokesperson section eng.mod.gov.cn/xb/News_213114/NewsRelease/ (its
+listings 404 since the 2025 redesign, its article pages still load) is enumerated through the CDX and fetched live
+first, Wayback copy otherwise. Older eng.chinamil.com.cn/view/ captures are general news: only items whose title
+names the spokesperson / press conference / Defense Ministry are kept (`title_re`).
+
+Wayback failures: a capture that could not be fetched (network error, refused connection, 5xx) is not marked done,
+and a prefix counts as finished only after a pass without such failures. Until 2026-10-05 failures were marked done
+(jzhzt: ~150 fetch errors) and the prefix closed; `WB_RETRY` reopens done Wayback URLs that have no document once.
 
 kind: briefing (conference transcript or one of its items; `unit` = conference | qa), statement (spokesperson
 remarks / answers to reporters), news (monthly releases). lang zh or en, one language per document.
@@ -44,15 +56,17 @@ ROOTS: List[Tuple[str, str, str]] = [
     ("zh", "http://www.mod.gov.cn/gfbw/xwfyr/lxjzhzt/index.html", "http://www.mod.gov.cn/gfbw/xwfyr/"),
     ("en", "http://eng.mod.gov.cn/2025xb/P/index.html", "http://eng.mod.gov.cn/2025xb/P/"),
 ]
-# Pre-2023 URL schemes (now 404 live) for the Wayback backfill: (lang, CDX prefix, article regex)
-WAYBACK: List[Tuple[str, str, str]] = [
-    ("zh", "mod.gov.cn/jzhzt/", r"/jzhzt/.*content_\d+\.htm$"),
-    ("zh", "mod.gov.cn/xwfyr/", r"/xwfyr/.*content_\d+\.htm$"),
-    ("zh", "mod.gov.cn/gfbw/xwfyr/", r"/gfbw/xwfyr/.*(?:content_)?\d+\.html?$"),
-    ("en", "eng.mod.gov.cn/news/", r"/news/\d{4}-\d{2}/\d{2}/content_\d+\.htm$"),
-    ("en", "eng.mod.gov.cn/xb/", r"/xb/.*\d+\.html?$"),
-    ("en", "eng.chinamil.com.cn/view/", r"/view/\d{4}-\d{2}/\d{2}/content_\d+\.htm$"),
+# Older URL schemes for the Wayback backfill: (lang, CDX prefix, article regex, live first?, title filter or None)
+SPOKES_EN = r"(?i)spokes|press conference|defen[cs]e ministry|ministry of national defen[cs]e|\bMND\b"
+WAYBACK: List[Tuple[str, str, str, bool, Optional[str]]] = [
+    ("zh", "mod.gov.cn/jzhzt/", r"/jzhzt/.*content_\d+\.htm$", False, None),
+    ("zh", "mod.gov.cn/xwfyr/", r"/xwfyr/.*content_\d+\.htm$", False, None),
+    ("zh", "mod.gov.cn/gfbw/xwfyr/", r"/gfbw/xwfyr/.*(?:content_)?\d+\.html?$", False, None),
+    ("en", "eng.mod.gov.cn/xb/News_213114/NewsRelease/", r"/NewsRelease/\d+\.html$", True, None),
+    ("en", "eng.mod.gov.cn/news/", r"/news/\d{4}-\d{2}/\d{2}/content_\d+\.htm$", False, None),
+    ("en", "eng.chinamil.com.cn/view/", r"/view/\d{4}-\d{2}/\d{2}/content_\d+\.htm$", False, SPOKES_EN),
 ]
+WB_RETRY = 1  # bump to reopen done Wayback URLs without a document (see module docstring)
 ART = re.compile(r"/(\d{6,9})\.html$")
 
 
@@ -85,14 +99,15 @@ def list_links(html: str, url: str, prefix: str) -> Tuple[List[str], List[str]]:
             arts.append(h)
     m = re.search(r"createPageHTML\(\s*'?(\d+)'?\s*,\s*'?(\d+)'?\s*,\s*'index'\s*,\s*'html'", html)
     if m and url.endswith("/index.html"):
-        lists += [url.replace("/index.html", f"/index_{i}.html") for i in range(1, int(m.group(1)))]
+        # the pager says N pages, but index_N.html exists too (2026-10: lxjzh_246940 index_10 = items to 2024-07)
+        lists += [url.replace("/index.html", f"/index_{i}.html") for i in range(1, int(m.group(1)) + 1)]
     return lists, arts
 
 
 def parse(html: str, lang: str) -> Optional[Dict]:
     """{title, date, text, pages} of an article page (date from publishdate meta or the info line)."""
     title = ""
-    h1 = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.S)
+    h1 = re.search(r'<h1(?![^>]*site-name)[^>]*>(.*?)</h1>', html, re.S)  # 2023-25 EN pages: h1 = site name
     if h1:
         title = lib.clean_html(h1.group(1))
     if not title:
@@ -125,9 +140,16 @@ def speaker_of(text: str, title: str, lang: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def fetch_article(url: str, lang: str, wayback_ts: Optional[str] = None) -> Optional[Dict]:
+def fetch_article(url: str, lang: str, wayback_ts: Optional[str] = None, live_first: bool = False) -> Optional[Dict]:
+    """Parsed page or None; lib.fetch.last["status"] is 0 after a network failure (caller must not mark it done)."""
+    html = None
+    if wayback_ts and live_first:
+        html = lib.fetch(url, min_delay=DELAY)
+        if html is not None:
+            wayback_ts = None
     src = cc.wayback_raw(url, wayback_ts) if wayback_ts else url
-    html = lib.fetch(src, min_delay=DELAY)
+    if html is None:
+        html = lib.fetch(src, min_delay=DELAY)
     if html is None:
         return None
     via = "wayback" if wayback_ts else (lib.fetch.last.get("via") or "direct")
@@ -218,29 +240,65 @@ def live_pass(sink: cc.Sink, st: lib.State) -> int:
     return sink.added + len(sink.buf) - before
 
 
+def wb_key(url: str) -> str:
+    m = re.search(r"(\d{5,})\.html?$", url)
+    return "wb" + (m.group(1) if m else lib.make_id("x", url).split(":")[1])
+
+
+def wb_url(orig: str) -> str:
+    return re.sub(r"^https://", "http://", orig.replace(":80/", "/"))
+
+
+def reopen_wayback(st: lib.State, sink: cc.Sink) -> None:
+    """Once per WB_RETRY: un-done Wayback-scheme URLs that have no document (marked done after fetch errors)."""
+    if st.get("wb_retry") == WB_RETRY:
+        return
+    def has_doc(u: str, lang: str) -> bool:  # stored by the Wayback pass, or by the live pass (same tree)
+        art = ART.search(u)
+        return sink.has(lib.make_id(SOURCE, f"{wb_key(u)}:{lang}")) or bool(
+            art and sink.has(lib.make_id(SOURCE, f"{art.group(1)}:{lang}")))
+
+    rxs = [(lang, re.compile(rx)) for lang, _, rx, _, _ in WAYBACK]
+    live = tuple(root.rsplit("/", 1)[0] + "/" for _, root, _ in ROOTS)  # live-pass trees: failures never marked done
+    reopen = [u for u in st._done if not u.startswith(live) and any(r.search(u) and not has_doc(u, lang)
+                                                                      for lang, r in rxs)]
+    st._done.difference_update(reopen)
+    for k in [k for k in st.data if k.startswith("wb_done_")]:
+        del st.data[k]
+    st["wb_retry"] = WB_RETRY
+    st.save()
+    log.info("wayback retry %d: reopened %d done URLs without a document", WB_RETRY, len(reopen))
+
+
 def wayback_pass(sink: cc.Sink, st: lib.State) -> int:
     before = sink.added
-    for lang, prefix, rx in WAYBACK:
+    reopen_wayback(st, sink)
+    for lang, prefix, rx, live_first, title_re in WAYBACK:
         if st.get("wb_done_" + prefix):
             continue
-        n = 0
+        n = neterr = listed = 0
         for orig, ts in cc.cdx_urls(prefix, rx):
-            url = re.sub(r"^https://", "http://", orig.replace(":80/", "/"))
+            listed += 1
+            url = wb_url(orig)
             if st.is_done(url):
                 continue
-            p = fetch_article(url, lang, wayback_ts=ts)
+            p = fetch_article(url, lang, wayback_ts=ts, live_first=live_first)
             if p is None:
-                st.mark_done(url)
+                if lib.fetch.last.get("status", 0) == 0:  # network failure / refused: retry on a later pass
+                    neterr += 1
+                else:
+                    st.mark_done(url)
                 continue
-            key = "wb" + (re.search(r"(\d{5,})\.html?$", url).group(1) if re.search(r"(\d{5,})\.html?$", url)
-                          else lib.make_id("x", url).split(":")[1])
-            store(sink, st, url, lang, p, key)
+            if title_re and not re.search(title_re, p["title"]):
+                st.mark_done(url)  # general news, not MND spokesperson output
+                continue
+            store(sink, st, url, lang, p, wb_key(url))
             n += 1
             if n % 20 == 0:
                 sink.flush()
         sink.flush()
-        if n == 0:  # CDX unreachable or empty: try again next pass
-            log.info("wayback %s: nothing fetched this pass", prefix)
+        if neterr or not listed:  # CDX unreachable / empty, or captures failed: try again next pass
+            log.info("wayback %s: %d fetched, %d network failures, %d listed; not finished", prefix, n, neterr, listed)
             continue
         st["wb_done_" + prefix] = True
         st.save()

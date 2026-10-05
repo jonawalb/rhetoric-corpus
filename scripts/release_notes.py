@@ -109,20 +109,26 @@ SOURCE_NOTES: Dict[str, Tuple[str, str]] = {
     "state_dept": ("2021-2025.state.gov briefings (direct) + current state.gov briefings/spokesperson releases via Wayback (www.state.gov 403).",
                    "All briefings; spokesperson statements 2025-04→ as captured."),
     "whitehouse": ("whitehouse.gov post sitemaps (2025-01-20→) + bidenwhitehouse.archives.gov briefing room.", "All statements, releases, fact sheets, remarks; Biden-era briefing transcripts."),
+    "us_dod": ("defense.gov / war.gov transcripts and press releases via Wayback only (live sites 403).",
+               "All captured articles 2021→; transcripts first, coverage = Wayback captures."),
+    "us_usun": ("U.S. Mission to the UN (usun.usmission.gov) posts via the site's WordPress REST API.",
+                "All posts the site holds (2023-06→); 2021 to mid-2023 removed from the site (gap)."),
     "mofaex_ar": ("Syrian MFA (mofaex.gov.sy) news listing, Arabic.", "All listed items; site holds transitional-government era only (`period`)."),
     "sana_en": ("SANA English politics + presidency (new site) and archive.sana.sy categories.", "Sections politics / Syria and the World; `period` splits Assad / transitional."),
     "mppre_es": ("Venezuela MFA publications by sequential id, Spanish.", "All items; `section` = comunicado / discurso / noticia."),
     "minrex_en": ("Cuban MFA English pages via Wayback only (DNS failure live).", "All captured pages 2021→."),
     "granma_en": ("Granma International (party daily, EN) archive listings.", "Sections Cuba, World, Díaz-Canel speeches."),
     "kp_rodong_en": ("Rodong Sinmun English via Wayback only.", "All captured articles 2021→; coverage uneven."),
+    "kp_kcna_en": ("KCNA English via Wayback only (kcna.kp filtered/unreachable live).",
+                   "All captured articles 2021→; statements of state organs/officials tagged outlet official."),
 }
 
 KNOWN_GAPS: List[str] = [
     "Collection was still running at the snapshot: many sources are partial (newest-first walkers have not "
     "reached 2021). Compare `first`/`last` dates in the coverage table before treating a series as complete.",
-    "North Korea: KCNA and Wayback copies of kcna.kp are blocked by the local network filter; Naenara, VOK and "
-    "Uriminzokkiri do not answer. Rodong Sinmun English (Wayback) is the only DPRK source and may be empty in "
-    "this version.",
+    "North Korea: KCNA and Rodong Sinmun English come from Wayback captures only (kcna.kp is filtered or does not "
+    "answer live; Naenara, VOK and Uriminzokkiri do not answer), so coverage is whatever Wayback captured. DPRK "
+    "'official' rows are statements published through KCNA, classified by title.",
     "US: www.state.gov answers 403 to the collector (bot wall), so post-January 2025 State Department material "
     "comes from Wayback captures only; 2021-2025 press statements under opaque URLs were not collected. White "
     "House press-secretary briefings after January 2025 are video only and not covered.",
