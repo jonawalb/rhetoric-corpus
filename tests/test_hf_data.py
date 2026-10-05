@@ -153,3 +153,13 @@ def test_upload_plan_copies_unchanged_files():
 def test_deterministic_sealing_makes_unchanged_files_identical(tmp_path):
     a = build_site.seal_file(KEY, MAGIC, b"same bytes")
     assert a == build_site.seal_file(KEY, MAGIC, b"same bytes") != build_site.seal_file(KEY, MAGIC, b"other")
+
+
+def test_stats_are_plaintext_counts_only(tmp_path):
+    plain, hf = tmp_path / "plain", tmp_path / "hf"
+    plain.mkdir()
+    (hf / "data").mkdir(parents=True)
+    (plain / "meta.json.gz").write_bytes(H.gz({"totals": {"docs": 12, "media_docs": 30, "sentences": 99}, "sources": []}))
+    p = H.write_stats(plain, hf, "2026-01-01T00:00:00+00:00")
+    assert json.loads(p.read_text()) == {"official_docs": 12, "media_docs": 30, "documents": 42,
+                                         "built": "2026-01-01T00:00:00+00:00"}

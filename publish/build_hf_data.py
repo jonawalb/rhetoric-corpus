@@ -203,6 +203,16 @@ def add_docs_to_meta(plain: Path, info: dict) -> None:
     (plain / "meta.json.gz").write_bytes(gz(meta))
 
 
+def write_stats(plain: Path, hf_root: Path, built: str) -> Path:
+    """data/stats.json, plaintext: document counts only, for public pages (the jwalberg.com/narratives/ landing page)."""
+    t = gunzip_json(plain / "meta.json.gz")["totals"]
+    stats = {"official_docs": t["docs"], "media_docs": t.get("media_docs", 0),
+             "documents": t["docs"] + t.get("media_docs", 0), "built": built}
+    p = hf_root / "data" / "stats.json"
+    p.write_text(json.dumps(stats))
+    return p
+
+
 # ---- sealing, pointer, builds --------------------------------------------------------------------------------
 def seal_tree(plain: Path, out: Path, key: bytes, magic: bytes) -> dict:
     """Seal every file of plain into out (same relative paths). Returns {path: {"sha256", "bytes"}}."""
@@ -313,9 +323,12 @@ def upload(hf_root: Path, build_id: str, repo: str, keep: int, batch: int = 500,
                      else o for o in chunk]
             api.create_commit(repo, repo_type="dataset", operations=chunk, commit_message=f"Build {build_id} ({i // batch + 1})")
         print(f"  committed {min(i + batch, len(ops))}/{len(ops)}")
+    final = [CommitOperationAdd(f"{root}/manifest.json", str(hf_root / root / "manifest.json")),
+             CommitOperationAdd("data/current.json", str(hf_root / "data" / "current.json"))]
+    if (hf_root / "data" / "stats.json").exists():  # public document counts, switched together with current.json
+        final.append(CommitOperationAdd("data/stats.json", str(hf_root / "data" / "stats.json")))
     api.create_commit(repo, repo_type="dataset", commit_message=f"Build {build_id}: manifest + current",
-                      operations=[CommitOperationAdd(f"{root}/manifest.json", str(hf_root / root / "manifest.json")),
-                                  CommitOperationAdd("data/current.json", str(hf_root / "data" / "current.json"))])
+                      operations=final)
     old = [b for b in sorted(set(remote_builds) | {build_id})[:-keep] if b != build_id] if keep > 0 else []
     if old:
         api.create_commit(repo, repo_type="dataset", commit_message=f"Remove old builds {', '.join(old)}",
@@ -344,11 +357,12 @@ def build(a: argparse.Namespace, key: bytes, magic: bytes) -> str:
             raise SystemExit(f"{a.trends}: no index.json.gz (run publish/build_trends.py first)")
         shutil.copytree(a.trends, plain / "trends")
     out = hf_root / "data" / build_id
-    manifest = {"build": build_id, "built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "files": seal_tree(plain, out, key, magic)}
+    built = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    manifest = {"build": build_id, "built": built, "files": seal_tree(plain, out, key, magic)}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=0, sort_keys=True))
     (hf_root / "README.md").write_text(CARD)
     (hf_root / ".gitattributes").write_text(GITATTRIBUTES)
+    write_stats(plain, hf_root, built)
     write_pointer(hf_root, build_id, key, magic)
     shutil.rmtree(a.staging / "plain")
     dropped = prune_builds(hf_root, a.keep, build_id)
