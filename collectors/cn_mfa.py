@@ -11,7 +11,9 @@ Two kinds of work, one process (single writer):
     conferences, statements, speeches/news). Each URL is fetched LIVE first (old pages migrated to the
     /web/<section>/<YYYYMM>/t<YYYYMMDD>_<n>.shtml scheme still resolve) and from the raw Wayback copy only if the
     live page is gone (MFA answers removed pages with a 200 "system" page, detected by its URL). A prefix whose
-    first live attempts all fail is marked wayback-only. CDX lists are cached in state/cn_mfa_cdx/.
+    first live attempts all fail is marked wayback-only. CDX lists are cached in state/cn_mfa_cdx/. Each prefix is
+    walked newest URL first (since 2026-10-05; before, oldest first, so 2021 EN and all pre-2022-07 ZH conferences
+    were still queued behind the 2010s).
 
 Dedupe: press conferences have id mfa_cn_archive:presser:<date>:<lang> (one per day per language; a second
 same-day conference is skipped); other documents mfa_cn_archive:<t-number>:<lang>, plus a (lang, date, title)
@@ -74,9 +76,9 @@ LISTINGS: List[Tuple[str, str, str, str]] = [
 ARCHIVE: List[Tuple[str, str, str, str]] = [
     ("en_presser_new", "en", "fmprc.gov.cn/eng/xw/fyrbt/lxjzh/", "briefing"),
     ("en_presser_665", "en", "fmprc.gov.cn/mfa_eng/xwfw_665399/s2510_665401/2511_665403/", "briefing"),
-    ("en_presser_old", "en", "fmprc.gov.cn/eng/xwfw/s2510/2511/", "briefing"),
     ("zh_presser_mfa", "zh", "mfa.gov.cn/web/fyrbt_673021/jzhsl_673025/", "briefing"),
     ("zh_presser_fmprc", "zh", "fmprc.gov.cn/web/fyrbt_673021/jzhsl_673025/", "briefing"),
+    ("en_presser_old", "en", "fmprc.gov.cn/eng/xwfw/s2510/2511/", "briefing"),  # pre-2014 scheme: after the ZH 2021-22 gap
     ("zh_presser_old", "zh", "fmprc.gov.cn/chn/gxh/tyb/fyrbt/jzhsl/", "briefing"),
     ("en_remarks_665", "en", "fmprc.gov.cn/mfa_eng/xwfw_665399/s2510_665401/", "statement"),
     ("en_remarks_old", "en", "fmprc.gov.cn/eng/xwfw/s2510/", "statement"),
@@ -435,7 +437,7 @@ class Collector:
                 continue
             live_stat = self.st.get(f"live:{key}") or {"ok": 0, "fail": 0}
             fails = 0
-            for original, ts in rows:
+            for original, ts in reversed(rows):  # newest first: the 2021-22 gaps fill before 2010s pages
                 url = self.live_url(original)
                 path = urllib.parse.urlsplit(url).path
                 if path in self.seen_paths or self.dd.skip_live(url, lang):
