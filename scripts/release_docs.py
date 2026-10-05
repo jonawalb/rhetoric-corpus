@@ -91,11 +91,13 @@ def render_readme(ctx: Dict[str, Any]) -> str:
         "## Contents",
         "```\n" + "\n".join(f"{f['path']:<40} {f['rows']:>9} rows  {f['bytes'] / 1e6:8.1f} MB"
                             for f in ctx["data_files"]) +
-        "\ncoverage.csv  README.md  CODEBOOK.md  CHANGELOG.md  MANIFEST.json  SHA256SUMS  ZENODO_METADATA.json\n```",
+        "\ncoverage.csv  SOURCES.md  README.md  CODEBOOK.md  CHANGELOG.md  MANIFEST.json  SHA256SUMS  ZENODO_METADATA.json\n```",
         "- `official/<CC>.parquet` — every `outlet = official` document with full text and all fields (Parquet, zstd).\n"
         "- `official_jsonl/<CC>.jsonl.gz` — the same rows as gzip JSON Lines for systems without Parquet tools.\n"
         "- `media/<CC>.parquet` — state-media, media and commentary items: metadata, word count and SHA-256 of the "
-        "text only. **No body text** (copyright).\n"
+        "text only. **No body text** (copyright). It also holds, as metadata only, the official-outlet sources "
+        "that publish journalism (" + ", ".join(f"`{k}`" for k in N.METADATA_ONLY_SOURCES) + ") and forwarded "
+        "posts in official Telegram channels; their `outlet` stays `official`.\n"
         "- `semantic/` — optional model scores (see below).\n"
         "- `coverage.csv` — one row per country × outlet × source × language: first and last date, documents.\n"
         "- `CODEBOOK.md` documents every field. `MANIFEST.json` lists every file with size, rows and SHA-256, the "
@@ -109,7 +111,7 @@ def render_readme(ctx: Dict[str, Any]) -> str:
         "## Collection method", "\n".join(f"- {x}" for x in N.COLLECTION_METHOD),
         "## Sampling rules per source",
         md_table(["Source", "Collection", "Sampling"], notes)
-        + (f"\n\nNo notes yet for: {', '.join(missing)} (see the corpus SOURCES.md)." if missing else ""),
+        + (f"\n\nNo notes yet for: {', '.join(missing)} (see SOURCES.md, the per-source collection log shipped with the release)." if missing else ""),
         "## Known gaps and blockers", "\n".join(f"- {x}" for x in N.KNOWN_GAPS),
         "## Analytic caveats", "\n".join(f"- {x}" for x in N.CAVEATS),
         "## Semantic scores", _semantic_text(ctx),
@@ -141,7 +143,9 @@ def render_readme(ctx: Dict[str, Any]) -> str:
         "- Underlying official texts belong to their issuing governments; they are redistributed here for research "
         "and analysis, with source URLs, and remain subject to the issuers' terms.\n"
         "- Media texts (state media, private media, commentary) are **not redistributed**: the release carries "
-        "metadata, word counts and text hashes only.\n"
+        "metadata, word counts and text hashes only. The same applies to official-outlet sources that publish "
+        "journalism: " + "; ".join(f"`{k}` ({v})" for k, v in N.METADATA_ONLY_SOURCES.items()) + " "
+        + N.FORWARDED_NOTE + "\n"
         "- Access on Zenodo is restricted: approved users may not redistribute the raw files.",
         "## Contact", f"{N.AUTHOR} ({N.AFFILIATION}), ORCID {N.ORCID}.",
     ]
@@ -187,7 +191,8 @@ def render_codebook(ctx: Dict[str, Any]) -> str:
         "any of id, country, source, lang, date, url, text is missing or empty; the id is not prefixed by "
         "`<source>:`; source or country disagree with the file path; outlet is not one of official / state_media "
         "/ media / commentary; date is not a valid ISO calendar date between 1990 and 2100; lang is not a 2-3 "
-        "letter code; url is not http(s); org/title/speaker/kind/via are not strings; or `fetched` is malformed. "
+        "letter code; url is not http(s); org/title/speaker/kind/via are not strings; `fetched` is malformed; or "
+        "the publication date is more than one day after the snapshot cut-off. "
         "Duplicate ids keep the first row read. Rows fetched after the snapshot cut-off are excluded.",
     ]
     if ctx["semantic"].get("included"):

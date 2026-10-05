@@ -108,6 +108,29 @@ def test_release_layout_and_rows(corpus):
     assert next(i for i in m["inputs"] if i["path"].endswith("mid_ru.jsonl"))["partial_tail_bytes"] > 0
 
 
+def test_drops_publication_dates_after_snapshot(corpus):
+    write(corpus / "docs", "IR", "ir_x", [doc("ir_x", 1, country="IR", outlet="state_media", lang="fa"),
+                                          doc("ir_x", 2, country="IR", outlet="state_media", lang="fa",
+                                              date="2026-12-13")])
+    m = run(corpus)
+    assert m["validation"]["dropped"]["date_after_snapshot"] == 1
+    ids = pq.read_table(corpus / "release" / "0.1.0" / "media" / "IR.parquet").column("id").to_pylist()
+    assert ids == ["ir_x:1"]
+
+
+def test_official_journalism_and_forwards_are_metadata_only(corpus):
+    write(corpus / "docs", "RU", "rg_ru", [doc("rg_ru", 1, kind="article")])
+    write(corpus / "docs", "RU", "telegram_ru", [doc("telegram_ru", 1, channel="MID_Russia"),
+                                                 doc("telegram_ru", 2, channel="MID_Russia", forwarded=True)])
+    run(corpus)
+    out = corpus / "release" / "0.1.0"
+    official = set(pq.read_table(out / "official" / "RU.parquet").column("id").to_pylist())
+    media = pq.read_table(out / "media" / "RU.parquet")
+    assert "telegram_ru:1" in official and not official & {"rg_ru:1", "telegram_ru:2"}
+    assert {"rg_ru:1", "telegram_ru:2"} <= set(media.column("id").to_pylist()) and "text" not in media.column_names
+    assert "`rg_ru`" in (out / "README.md").read_text(encoding="utf-8")
+
+
 def test_docs_manifest_and_checksums(corpus):
     run(corpus)
     out = corpus / "release" / "0.1.0"

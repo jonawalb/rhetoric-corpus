@@ -33,7 +33,7 @@ import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -90,6 +90,11 @@ def previous_manifest(out_root: Path, version: str) -> Optional[Dict[str, Any]]:
     return json.loads(max(older, key=lambda p: key(p.parent.name)).read_text(encoding="utf-8"))
 
 
+def metadata_only(row: Dict[str, Any]) -> bool:
+    """Official-outlet rows whose text is journalism or a forwarded post: released as metadata only."""
+    return row["source"] in release_docs.N.METADATA_ONLY_SOURCES or bool(row.get("forwarded"))
+
+
 def collect(files: List[Path], cutoff: datetime, d_from: Optional[str], d_to: Optional[str]) -> Dict[str, Any]:
     """Read, validate, filter and dedupe every input file; returns records grouped by country."""
     seen: set = set()
@@ -99,6 +104,8 @@ def collect(files: List[Path], cutoff: datetime, d_from: Optional[str], d_to: Op
     examples: Dict[str, List[str]] = defaultdict(list)
     excluded: Counter = Counter()
     inputs = []
+    # Publication dates later than the snapshot (one day of slack for time zones) are collector errors.
+    latest_date = (cutoff.date() + timedelta(days=1)).isoformat()
     for path in files:
         country, source = path.parent.name, path.stem
         rows, info = RD.read_snapshot(path)
@@ -114,6 +121,11 @@ def collect(files: List[Path], cutoff: datetime, d_from: Optional[str], d_to: Op
                 if len(examples[reason]) < 10:
                     examples[reason].append(f"{path.name}:{line_no} {str(row.get('id') if isinstance(row, dict) else '')[:80]}")
                 continue
+            if row["date"] > latest_date:
+                dropped["date_after_snapshot"] += 1
+                if len(examples["date_after_snapshot"]) < 10:
+                    examples["date_after_snapshot"].append(f"{path.name}:{line_no} {row['id'][:80]} {row['date']}")
+                continue
             fetched = RD.parse_ts(row.get("fetched"))
             if fetched is None:
                 excluded["no_fetched_time_kept"] += 1
@@ -127,7 +139,7 @@ def collect(files: List[Path], cutoff: datetime, d_from: Optional[str], d_to: Op
                 excluded["duplicate_id"] += 1
                 continue
             seen.add(row["id"])
-            if row["outlet"] == "official":
+            if row["outlet"] == "official" and not metadata_only(row):
                 official[country].append(RD.official_record(row))
             else:
                 media[country].append(RD.media_record(row))
@@ -220,6 +232,8 @@ def build(a: argparse.Namespace) -> Dict[str, Any]:
            "build_date_local": now.astimezone().date().isoformat(),
            "git": git_info(a.git_root), "semantic": semantic, "data_files": data_files,
            "dropped_total": sum(data["dropped"].values()), **summary}
+    if (a.git_root / "SOURCES.md").exists():  # per-source collection log, referenced by README
+        shutil.copyfile(a.git_root / "SOURCES.md", tmp / "SOURCES.md")
     with (tmp / "coverage.csv").open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["country", "outlet", "source", "lang", "org", "first", "last", "n"])
         w.writeheader()
