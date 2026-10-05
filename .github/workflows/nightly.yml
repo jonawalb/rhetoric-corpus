@@ -10,7 +10,7 @@ on:
     inputs:
       collect_minutes:
         description: "Global collection budget (minutes)"
-        default: "150"
+        default: "100"
       skip_chains:
         description: "Comma list of collector chains to skip (see scripts/ci_collect.py --list)"
         default: ""
@@ -46,7 +46,7 @@ jobs:
       TRANSFORMERS_VERBOSITY: error
       TOKENIZERS_PARALLELISM: "false"
       PYTHONUNBUFFERED: "1"
-      COLLECT_MINUTES: ${{ inputs.collect_minutes || '150' }}
+      COLLECT_MINUTES: ${{ inputs.collect_minutes || '100' }}
       COLLECT_SKIP: ${{ inputs.skip_chains || '' }}
     steps:
       - name: Free disk space
@@ -88,7 +88,7 @@ jobs:
         id: collect
         if: steps.pull.outcome == 'success'
         continue-on-error: true
-        timeout-minutes: 165
+        timeout-minutes: 115
         run: uv run --no-sync python scripts/ci_collect.py --budget $(( COLLECT_MINUTES * 60 ))
 
       - name: Seal collected documents
@@ -142,7 +142,7 @@ jobs:
         id: publish
         if: always() && steps.trends.outcome == 'success' && (github.event_name == 'schedule' || inputs.publish)
         continue-on-error: true
-        timeout-minutes: 30
+        timeout-minutes: 90
         run: uv run --no-sync python publish/build_hf_data.py --trends staging/trends --upload 2>&1 | tail -15
 
       - name: Push store (always, so collected documents are never lost)
