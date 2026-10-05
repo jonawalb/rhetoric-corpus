@@ -115,14 +115,16 @@ SOURCE_NOTES: Dict[str, Tuple[str, str]] = {
     "minrex_en": ("Cuban MFA English pages via Wayback only (DNS failure live).", "All captured pages 2021→."),
     "granma_en": ("Granma International (party daily, EN) archive listings.", "Sections Cuba, World, Díaz-Canel speeches."),
     "kp_rodong_en": ("Rodong Sinmun English via Wayback only.", "All captured articles 2021→; coverage uneven."),
+    "kp_kcna_en": ("KCNA English via Wayback only (kcna.kp filtered/unreachable live).",
+                   "All captured articles 2021→; statements of state organs/officials tagged outlet official."),
 }
 
 KNOWN_GAPS: List[str] = [
     "Collection was still running at the snapshot: many sources are partial (newest-first walkers have not "
     "reached 2021). Compare `first`/`last` dates in the coverage table before treating a series as complete.",
-    "North Korea: KCNA and Wayback copies of kcna.kp are blocked by the local network filter; Naenara, VOK and "
-    "Uriminzokkiri do not answer. Rodong Sinmun English (Wayback) is the only DPRK source and may be empty in "
-    "this version.",
+    "North Korea: KCNA and Rodong Sinmun English come from Wayback captures only (kcna.kp is filtered or does not "
+    "answer live; Naenara, VOK and Uriminzokkiri do not answer), so coverage is whatever Wayback captured. DPRK "
+    "'official' rows are statements published through KCNA, classified by title.",
     "US: www.state.gov answers 403 to the collector (bot wall), so post-January 2025 State Department material "
     "comes from Wayback captures only; 2021-2025 press statements under opaque URLs were not collected. White "
     "House press-secretary briefings after January 2025 are video only and not covered.",

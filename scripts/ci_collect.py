@@ -62,6 +62,7 @@ CHAINS: List[Chain] = [
     chain("by_president_ru", "by_president.py --lang ru"),
     chain("in_mea", "in_mea.py"),
     chain("kp_rodong_en", "kp_rodong_en.py"),
+    chain("kp_kcna_en", "kp_kcna_en.py"),
     chain("pk_mofa", "pk_mofa.py"),
     chain("pk_ispr", "pk_ispr.py"),
     chain("ru_kremlin", "ru_kremlin.py --start earliest --events"),

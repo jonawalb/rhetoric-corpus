@@ -14,6 +14,7 @@ run by_president_en by_president.py --lang en
 run by_president_ru by_president.py --lang ru
 run in_mea in_mea.py
 run kp_rodong_en kp_rodong_en.py
+run kp_kcna_en kp_kcna_en.py
 run pk_mofa pk_mofa.py
 run ru_kremlin ru_kremlin.py --start earliest --events
 run ru_kremlin_en ru_kremlin.py --lang en --start earliest --events
