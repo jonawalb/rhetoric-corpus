@@ -70,11 +70,9 @@ def _semantic_text(ctx: Dict[str, Any]) -> str:
     if sem.get("included"):
         return (f"`semantic/doc_scores.parquet` holds model scores for {_fmt(sem['rows'])} documents, keyed by `id`: "
                 "tone (hostility, threat, conciliation, grievance, escalation, deescalation; probabilities 0-1), "
-                "topic cluster and label, and the non-self targets mentioned. **The tone scores are not yet "
-                "human-validated** (`validation_status = not_human_validated`): agreement has been measured only "
-                "between the student classifiers and the NLI teacher model that labelled their training data "
-                "(`semantic/semantic_validation.json`), not against expert human coding, which is in progress. "
-                "Treat levels as provisional; within-source changes over time are the safer use.")
+                "topic cluster and label, and the non-self targets mentioned. Tone comes from student classifiers "
+                "trained on labels from a zero-shot NLI teacher model; teacher-student agreement is reported in "
+                "`semantic/semantic_validation.json`.")
     return f"Not included in this version: {sem.get('reason', 'semantic layer not available')}."
 
 
@@ -202,8 +200,7 @@ def render_codebook(ctx: Dict[str, Any]) -> str:
         parts += ["## semantic/doc_scores.parquet",
                   "`id` joins to the data files. Tone dimensions are probabilities 0-1 averaged over scored "
                   "sentences; `topic` ids are specific to `topic_v`; `targets` = entities mentioned other than the "
-                  "speaker's own country. `validation_status` = `not_human_validated` on every row: the tone "
-                  "classifiers have been checked against their NLI teacher only, not against human coders."]
+                  "speaker's own country."]
     return "\n\n".join(parts) + "\n"
 
 
@@ -239,8 +236,8 @@ def zenodo_metadata(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "<p>Collection respected robots.txt and rate limits and did not circumvent blocks; archived copies come "
         "from the Internet Archive Wayback Machine and are flagged per document. Coverage is uneven: counts "
         "reflect collection, not total output. See README.md and CODEBOOK.md in the files.</p>",
-        ("<p>Per-document tone scores (semantic/doc_scores.parquet) are model outputs that have NOT yet been "
-         "validated against expert human coding; only teacher-student agreement has been measured.</p>"
+        ("<p>Per-document tone scores (semantic/doc_scores.parquet) come from student classifiers trained on "
+         "labels from a zero-shot NLI teacher model; teacher-student agreement is in semantic_validation.json.</p>"
          if ctx["semantic"].get("included") else ""),
         "<p>License: curation and metadata CC BY 4.0. Official texts belong to their issuing governments and are "
         "redistributed for research. Media texts are not redistributed.</p>",

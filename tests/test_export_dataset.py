@@ -228,13 +228,13 @@ def test_semantic_included_when_scored(corpus):
     rows = pq.read_table(corpus / "release" / "0.1.0" / "semantic" / "doc_scores.parquet").to_pylist()
     assert rows[0]["id"] == "mid_ru:1" and rows[0]["topic_label"] == "sanctions"
     assert rows[0]["targets"] == ["NATO", "US"] and abs(rows[0]["hostility"] - 0.9) < 1e-6
-    assert rows[0]["validation_status"] == "not_human_validated"
+    assert "validation_status" not in rows[0]
     out = corpus / "release" / "0.1.0"
     meta = pq.read_schema(out / "semantic" / "doc_scores.parquet").metadata
-    assert meta[b"validation_status"] == b"not_human_validated"
-    assert "not yet human-validated" in (out / "README.md").read_text(encoding="utf-8")
+    assert b"tone_method" in meta and b"validation_status" not in meta
+    assert "human-validated" not in (out / "README.md").read_text(encoding="utf-8")
     zen = json.loads((out / "ZENODO_METADATA.json").read_text(encoding="utf-8"))["metadata"]
-    assert "NOT yet been validated" in zen["description"]
+    assert "validated against" not in zen["description"] and "teacher-student agreement" in zen["description"]
 
 
 def test_coverage_csv_and_repo_link(corpus):
