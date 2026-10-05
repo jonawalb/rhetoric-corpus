@@ -1,4 +1,4 @@
-"""Parser tests for us_dod (defense.gov / war.gov via Wayback) and us_usun (WordPress REST). Markup structure follows
+"""Parser tests for us_dod (defense.gov / war.gov via Wayback), us_usun (WordPress REST) and the in_mea listing walk. Markup follows
 pages seen 2026-10-05; all text is synthetic."""
 from __future__ import annotations
 
@@ -61,3 +61,32 @@ def test_usun_parse_post():
     assert p["text"].startswith("Ambassador Jane Example") and "Explanation of Vote" not in p["text"]
     post["title"]["rendered"] = "Remarks at a Synthetic Meeting"
     assert us_usun.parse_post(post)["kind"] == "speech"
+
+
+# ------------------------------------------------------------------ in_mea: press releases + incremental listing walk
+import in_mea  # noqa: E402
+
+
+def _cards(start_id, dates):
+    return "".join(f'<span class="date">{d}</span><h3 class="pressTitle"><a href="/press-releases?dtl/{start_id + i}/x">'
+                   f"Synthetic title {start_id + i}</a></h3>" for i, d in enumerate(dates))
+
+
+def test_mea_walk_incremental(tmp_path, monkeypatch):
+    monkeypatch.setattr(lib, "STATE", tmp_path)
+    monkeypatch.setattr(in_mea, "PUBS", [(51, "statement")])
+    pages = {1: _cards(100, ["30 September, 2026", "02 January, 2021"]), 2: _cards(50, ["15 December, 2020"])}
+    calls = []
+
+    def fake_get(url, cache=None):
+        p = int(url.split("&page=")[1].split("&")[0])
+        calls.append(p)
+        return pages.get(p, "")
+
+    monkeypatch.setattr(in_mea, "get", fake_get)
+    st = lib.State("in_mea")
+    items = in_mea.walk(st)
+    assert set(items) == {"100", "101"} and items["100"]["date"] == "2026-09-30" and st.get("walked:51")
+    calls.clear()
+    in_mea.walk(st)  # nothing new on page 1: stop there
+    assert calls == [1]

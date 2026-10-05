@@ -1,7 +1,9 @@
-"""India MEA (mea.gov.in): weekly media-briefing transcripts and speeches/statements, 2021-01-01 -> today.
+"""India MEA (mea.gov.in): media-briefing transcripts, speeches/statements, press releases and interviews,
+2021-01-01 -> today. Press releases (51) and interviews (52) added 2026-10-05; before that only 49/50 were
+collected (~250 docs a year).
 
 The site's own listing and detail endpoints (the same ones its pages call):
-  /FrontEnd/FetchPublicationListingData?publicationId=49|50&SortBy=new&page=N&PageSize=50&PLngId=1
+  /FrontEnd/FetchPublicationListingData?publicationId=49|50|51|52&SortBy=new&page=N&PageSize=50&PLngId=1
   /FrontEnd/FetchPublicationDetailData?pkid=<id>&languageId=1
 Listing cards give date ("30 September, 2026"), title and the public detail URL
 (/media-briefings?dtl/<pkid>/<slug>); the detail fragment gives the full text (div.description).
@@ -24,7 +26,8 @@ from lib import RAW, State, clean_html, fetch, make_id, setup_logging, write_doc
 SOURCE = "in_mea"
 BASE = "https://www.mea.gov.in"
 START = "2021-01-01"
-PUBS = [(49, "briefing"), (50, "statement")]   # 49 Media Briefings, 50 Speeches & Statements
+# 49 Media Briefings, 50 Speeches & Statements, 51 Press Releases, 52 Interviews
+PUBS = [(49, "briefing"), (50, "statement"), (51, "statement"), (52, "interview")]
 BLOCKED = "Web Page Blocked"
 log = setup_logging(SOURCE)
 
@@ -64,7 +67,7 @@ def walk(st: State) -> Dict[str, Dict]:
             if not cards:
                 log.warning("listing %s page %d empty", pub, page)
                 break
-            oldest = "9999"
+            oldest, new = "9999", 0
             for d, href, title in cards:
                 date = parse_date(d)
                 m = re.search(r"\?dtl/(\d+)/", href)
@@ -74,9 +77,13 @@ def walk(st: State) -> Dict[str, Dict]:
                 if date >= START and m.group(1) not in items:
                     items[m.group(1)] = {"date": date, "title": clean_html(title), "kind": kind,
                                          "url": BASE + href if href.startswith("/") else href}
+                    new += 1
             log.info("pub %d page %d: %d cards, oldest %s, total %d", pub, page, len(cards), oldest, len(items))
             if oldest < START:
+                st[f"walked:{pub}"] = True  # listing walked back to START once
                 break
+            if not new and st.get(f"walked:{pub}"):
+                break  # incremental run: the rest of the listing is known
             page += 1
         st["items"] = items
         st.save()
