@@ -37,18 +37,19 @@ def country_summary(ctx: Dict[str, Any]) -> List[List[Any]]:
     by: Dict[str, Counter] = defaultdict(Counter)
     span: Dict[str, List[str]] = {}
     for c in ctx["coverage"]:
-        by[c["country"]][c["outlet"]] += c["n"]
+        by[c["country"]][c.get("release", "full_text" if c["outlet"] == "official" else "metadata_only")] += c["n"]
         lo, hi = span.get(c["country"], [c["first"], c["last"]])
         span[c["country"]] = [min(lo, c["first"]), max(hi, c["last"])]
     rows = []
     for cc in sorted(by):
-        media = sum(v for k, v in by[cc].items() if k != "official")
-        rows.append([cc, _fmt(by[cc]["official"]), _fmt(media), span[cc][0], span[cc][1]])
+        rows.append([cc, _fmt(by[cc]["full_text"]), _fmt(by[cc]["metadata_only"]), span[cc][0], span[cc][1]])
     return rows
 
 
 def coverage_rows(ctx: Dict[str, Any], official: bool) -> List[List[Any]]:
-    rows = [c for c in ctx["coverage"] if (c["outlet"] == "official") == official]
+    rows = [c for c in ctx["coverage"]
+            if c.get("release", "full_text" if c["outlet"] == "official" else "metadata_only")
+            == ("full_text" if official else "metadata_only")]
     rows.sort(key=lambda c: (c["country"], c["outlet"], c["source"], c["lang"]))
     out = []
     for c in rows:
@@ -103,7 +104,7 @@ def render_readme(ctx: Dict[str, Any]) -> str:
         "- `coverage.csv` — one row per country × outlet × source × language: first and last date, documents.\n"
         "- `CODEBOOK.md` documents every field. `MANIFEST.json` lists every file with size, rows and SHA-256, the "
         "input files read, and rows dropped by validation.",
-        "## Coverage by country", md_table(["Country", "Official docs", "Media items", "First", "Last"],
+        "## Coverage by country", md_table(["Country", "Full-text docs", "Metadata-only items", "First", "Last"],
                                            country_summary(ctx)),
         "## Coverage: official documents (full text)",
         md_table(["Country", "Source", "Org", "Lang", "First", "Last", "Docs"], coverage_rows(ctx, True)),
@@ -234,7 +235,7 @@ def zenodo_metadata(ctx: Dict[str, Any]) -> Dict[str, Any]:
         f"<p>Version {ctx['version']}: snapshot up to {ctx['snapshot']['effective']} (UTC). "
         f"{_fmt(ctx['totals']['official'])} official documents with full text (Parquet and gzip JSON Lines) and "
         f"{_fmt(ctx['totals']['media'])} state-media and media items as metadata only (no body text).</p>",
-        html_table(["Country", "Official docs", "Media items", "First", "Last"], country_summary(ctx)),
+        html_table(["Country", "Full-text docs", "Metadata-only items", "First", "Last"], country_summary(ctx)),
         "<p>Collection respected robots.txt and rate limits and did not circumvent blocks; archived copies come "
         "from the Internet Archive Wayback Machine and are flagged per document. Coverage is uneven: counts "
         "reflect collection, not total output. See README.md and CODEBOOK.md in the files.</p>",

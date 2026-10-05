@@ -152,9 +152,10 @@ def summarise(data: Dict[str, Any]) -> Dict[str, Any]:
     values: Dict[str, Counter] = defaultdict(Counter)
     speakers: Dict[str, Counter] = defaultdict(Counter)
     for kind in ("official", "media"):
+        release = "full_text" if kind == "official" else "metadata_only"
         for recs in data[kind].values():
             for r in recs:
-                g = groups.setdefault((r["country"], r["outlet"], r["source"], r["lang"]),
+                g = groups.setdefault((r["country"], r["outlet"], r["source"], r["lang"], release),
                                       {"n": 0, "first": r["date"], "last": r["date"], "orgs": Counter()})
                 g["n"] += 1
                 g["first"], g["last"] = min(g["first"], r["date"]), max(g["last"], r["date"])
@@ -165,14 +166,14 @@ def summarise(data: Dict[str, Any]) -> Dict[str, Any]:
                 if r.get("speaker"):
                     speakers[r["source"]][r["speaker"]] += 1
     coverage = []
-    for (cc, outlet, src, lang), g in sorted(groups.items()):
+    for (cc, outlet, src, lang, release), g in sorted(groups.items()):
         orgs = [o for o, _ in g["orgs"].most_common() if o]
         org = ", ".join(orgs) if len(orgs) <= 3 else f"{', '.join(orgs[:3])} +{len(orgs) - 3} more"
-        coverage.append({"country": cc, "outlet": outlet, "source": src, "lang": lang, "org": org,
+        coverage.append({"country": cc, "outlet": outlet, "source": src, "lang": lang, "release": release, "org": org,
                          "first": g["first"].isoformat(), "last": g["last"].isoformat(), "n": g["n"]})
     by_co: Counter = Counter()
     for c in coverage:
-        by_co[f"{c['country']}/{c['outlet']}"] += c["n"]
+        by_co[f"{c['country']}/{c['outlet']}/{c['release']}"] += c["n"]
     totals = {"official": sum(len(v) for v in data["official"].values()),
               "media": sum(len(v) for v in data["media"].values()),
               "countries": len({c["country"] for c in coverage}), "sources": len({c["source"] for c in coverage})}
@@ -235,7 +236,8 @@ def build(a: argparse.Namespace) -> Dict[str, Any]:
     if (a.git_root / "SOURCES.md").exists():  # per-source collection log, referenced by README
         shutil.copyfile(a.git_root / "SOURCES.md", tmp / "SOURCES.md")
     with (tmp / "coverage.csv").open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["country", "outlet", "source", "lang", "org", "first", "last", "n"])
+        w = csv.DictWriter(f, fieldnames=["country", "outlet", "source", "lang", "release", "org", "first",
+                                          "last", "n"])
         w.writeheader()
         w.writerows(summary["coverage"])
     prev = previous_manifest(a.out_root, a.version)

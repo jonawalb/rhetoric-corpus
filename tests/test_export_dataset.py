@@ -128,7 +128,12 @@ def test_official_journalism_and_forwards_are_metadata_only(corpus):
     media = pq.read_table(out / "media" / "RU.parquet")
     assert "telegram_ru:1" in official and not official & {"rg_ru:1", "telegram_ru:2"}
     assert {"rg_ru:1", "telegram_ru:2"} <= set(media.column("id").to_pylist()) and "text" not in media.column_names
-    assert "`rg_ru`" in (out / "README.md").read_text(encoding="utf-8")
+    readme = (out / "README.md").read_text(encoding="utf-8")
+    assert "`rg_ru`" in readme
+    # country table counts released full texts, not the corpus outlet class
+    assert "| RU | 3 | 4 |" in readme
+    cov = {(r["source"], r["release"]): int(r["n"]) for r in csv.DictReader((out / "coverage.csv").open())}
+    assert cov[("rg_ru", "metadata_only")] == 1 and cov[("telegram_ru", "full_text")] == 1
 
 
 def test_reserved_doi_is_cited(corpus):
