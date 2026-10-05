@@ -131,6 +131,14 @@ def test_official_journalism_and_forwards_are_metadata_only(corpus):
     assert "`rg_ru`" in (out / "README.md").read_text(encoding="utf-8")
 
 
+def test_reserved_doi_is_cited(corpus):
+    m = run(corpus, "--doi", "10.5281/zenodo.123")
+    out = corpus / "release" / "0.1.0"
+    readme = (out / "README.md").read_text(encoding="utf-8")
+    assert "https://doi.org/10.5281/zenodo.123" in readme and "XXXXXXX" not in readme
+    assert m["doi"] == "10.5281/zenodo.123"
+
+
 def test_docs_manifest_and_checksums(corpus):
     run(corpus)
     out = corpus / "release" / "0.1.0"

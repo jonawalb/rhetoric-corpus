@@ -230,7 +230,7 @@ def build(a: argparse.Namespace) -> Dict[str, Any]:
                            "bytes": (tmp / "semantic" / "doc_scores.parquet").stat().st_size})
     ctx = {"version": a.version, "build_time": now.isoformat(timespec="seconds"), "snapshot": snap,
            "build_date_local": now.astimezone().date().isoformat(),
-           "git": git_info(a.git_root), "semantic": semantic, "data_files": data_files,
+           "doi": a.doi, "git": git_info(a.git_root), "semantic": semantic, "data_files": data_files,
            "dropped_total": sum(data["dropped"].values()), **summary}
     if (a.git_root / "SOURCES.md").exists():  # per-source collection log, referenced by README
         shutil.copyfile(a.git_root / "SOURCES.md", tmp / "SOURCES.md")
@@ -251,7 +251,7 @@ def build(a: argparse.Namespace) -> Dict[str, Any]:
         listing.append({"path": rel, "bytes": p.stat().st_size, "rows": rows, "sha256": sha256_file(p)})
     manifest = {
         "dataset": release_docs.N.TITLE, "version": a.version, "build_time": ctx["build_time"],
-        "snapshot": snap, "date_from": a.date_from, "date_to": a.date_to,
+        "doi": a.doi, "snapshot": snap, "date_from": a.date_from, "date_to": a.date_to,
         "countries_filter": sorted(c.upper() for c in a.countries) if a.countries else None,
         "corpus_repo": {"path": str(a.git_root), **ctx["git"]},
         "totals": summary["totals"], "rows_by_country_outlet": summary["rows_by_country_outlet"],
@@ -286,6 +286,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--git-root", type=Path, default=ROOT)
     ap.add_argument("--max-gb", type=float, default=2.0, help="refuse if the selected input exceeds this")
     ap.add_argument("--min-free-gb", type=float, default=8.0, help="refuse if free disk could fall below this")
+    ap.add_argument("--doi", help="DOI reserved for this version (e.g. a Zenodo pre-reserved DOI); cited in README")
     ap.add_argument("--overwrite", action="store_true", help="replace an existing release/<version>")
     a = ap.parse_args(argv)
     for d in (a.date_from, a.date_to):
