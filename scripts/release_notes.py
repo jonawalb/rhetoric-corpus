@@ -11,6 +11,8 @@ TITLE = "Multilingual State Rhetoric Corpus"
 AUTHOR = "Walberg, Jonathan"
 ORCID = "0009-0000-2065-8481"
 AFFILIATION = "University of Virginia"
+# Public code repository (collectors, export script); linked from the Zenodo record as supplementary software.
+REPO_URL = "https://github.com/jonawalb/rhetoric-corpus"
 
 PURPOSE = (
     "A multilingual corpus of official government statements (foreign ministries, presidencies, defence "

@@ -12,6 +12,7 @@ Output (release/ is gitignored; nothing is uploaded anywhere):
   official_jsonl/<CC>.jsonl.gz   same rows as gzip JSON Lines
   media/<CC>.parquet             state_media / media / commentary: metadata only, no body text
   semantic/doc_scores.parquet    optional, when index/semantic has per-doc tone scores
+  coverage.csv                   country x outlet x source x language: first/last date, documents
   README.md CODEBOOK.md CHANGELOG.md ZENODO_METADATA.json MANIFEST.json SHA256SUMS
 
 Snapshot: --snapshot-date D keeps rows whose `fetched` is at or before the end of day D in the machine's local
@@ -24,6 +25,7 @@ smaller than the input) or when free disk after the build would drop below --min
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import logging
@@ -218,6 +220,10 @@ def build(a: argparse.Namespace) -> Dict[str, Any]:
            "build_date_local": now.astimezone().date().isoformat(),
            "git": git_info(a.git_root), "semantic": semantic, "data_files": data_files,
            "dropped_total": sum(data["dropped"].values()), **summary}
+    with (tmp / "coverage.csv").open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["country", "outlet", "source", "lang", "org", "first", "last", "n"])
+        w.writeheader()
+        w.writerows(summary["coverage"])
     prev = previous_manifest(a.out_root, a.version)
     (tmp / "README.md").write_text(release_docs.render_readme(ctx), encoding="utf-8")
     (tmp / "CODEBOOK.md").write_text(release_docs.render_codebook(ctx), encoding="utf-8")

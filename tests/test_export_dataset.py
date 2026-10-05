@@ -1,6 +1,7 @@
 """Tests for the dataset release export (scripts/export_dataset.py and its release_* modules)."""
 from __future__ import annotations
 
+import csv
 import gzip
 import hashlib
 import json
@@ -191,6 +192,25 @@ def test_semantic_included_when_scored(corpus):
     rows = pq.read_table(corpus / "release" / "0.1.0" / "semantic" / "doc_scores.parquet").to_pylist()
     assert rows[0]["id"] == "mid_ru:1" and rows[0]["topic_label"] == "sanctions"
     assert rows[0]["targets"] == ["NATO", "US"] and abs(rows[0]["hostility"] - 0.9) < 1e-6
+    assert rows[0]["validation_status"] == "not_human_validated"
+    out = corpus / "release" / "0.1.0"
+    meta = pq.read_schema(out / "semantic" / "doc_scores.parquet").metadata
+    assert meta[b"validation_status"] == b"not_human_validated"
+    assert "not yet human-validated" in (out / "README.md").read_text(encoding="utf-8")
+    zen = json.loads((out / "ZENODO_METADATA.json").read_text(encoding="utf-8"))["metadata"]
+    assert "NOT yet been validated" in zen["description"]
+
+
+def test_coverage_csv_and_repo_link(corpus):
+    run(corpus)
+    out = corpus / "release" / "0.1.0"
+    rows = list(csv.DictReader((out / "coverage.csv").open(encoding="utf-8")))
+    assert {r["source"] for r in rows} >= {"mid_ru", "ria_ru", "mfa_cn"}
+    assert sum(int(r["n"]) for r in rows) == sum(c["n"] for c in json.loads(
+        (out / "MANIFEST.json").read_text(encoding="utf-8"))["coverage"])
+    assert "coverage.csv" in (out / "SHA256SUMS").read_text(encoding="utf-8")
+    zen = json.loads((out / "ZENODO_METADATA.json").read_text(encoding="utf-8"))["metadata"]
+    assert zen["related_identifiers"][0]["identifier"].startswith("https://github.com/")
 
 
 def test_check_row_reasons():
