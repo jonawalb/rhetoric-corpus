@@ -37,6 +37,7 @@ Usage:
   uv run python scripts/store_sync.py seal   [--keep-parts]          # layout 2: seal active docs into a verified part
   uv run python scripts/store_sync.py migrate                        # one time: layout 1 docs/*.jsonl -> parts
   uv run python scripts/store_sync.py layout                         # print the store layout (1 or 2)
+  uv run python scripts/store_sync.py repair                         # layout 2: seal stray stored docs/*.jsonl
   uv run python scripts/store_sync.py push   [--dry-run]             # upload changed files
   uv run python scripts/store_sync.py push --only docs               # laptop: merge its extra documents into the store
   uv run python scripts/store_sync.py verify                         # compare local files with the stored manifest
@@ -70,7 +71,15 @@ DELETABLE = ("index/semantic/", "logs/ci/")
 APPEND_ONLY = ("docs/",)
 PARTS = "docs-parts/"
 IDS = "state/ids/"
-_LAYOUT = {"remote": 1}  # layout of the store as of the last remote_manifest() read
+_LAYOUT = {"remote": 1}  # layout of the store as of the last remote_manifest() read (only ever raised)
+# Layout is sticky. 2026-10-04 an older checkout's push rewrote manifest.json without the "layout" key and silently
+# turned the store back into layout 1. Since then layout 2 is recorded three ways, and the highest one wins:
+#   * the LAYOUT marker file at the store root (no writer of any version ever deletes it);
+#   * manifest.json {"layout": 2, "entries": {...}}: the file list moved from "files" to "entries", so code that
+#     predates the segmented store fails with KeyError instead of rewriting the manifest;
+#   * a layout read in this process never goes down again (_raise_layout), and a checkout that has once seen
+#     layout 2 remembers it (staging/seal/layout): if the store then reads lower, store_sync raises.
+LAYOUT_FILE = "LAYOUT"
 CARD = """---
 viewer: false
 ---
@@ -142,14 +151,42 @@ def api():
     return HfApi()
 
 
-def remote_manifest(hf, repo: str) -> Dict[str, dict]:
+def _raise_layout(n: int) -> None:
+    _LAYOUT["remote"] = max(_LAYOUT["remote"], n)
+    if n >= 2:
+        f = ROOT / "staging" / "seal" / "layout"
+        if not f.exists() or int(f.read_text().strip() or 0) < n:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(f"{n}\n")
+
+
+def _seen_layout() -> int:
+    try:
+        return int((ROOT / "staging" / "seal" / "layout").read_text().strip() or 1)
+    except (OSError, ValueError):
+        return 1
+
+
+def remote_manifest(hf, repo: str, allow_downgraded: bool = False) -> Dict[str, dict]:
+    """Stored file list; also sets the store layout (max of the LAYOUT marker, the manifest key and earlier reads).
+    A store with the LAYOUT marker but no readable manifest raises instead of looking empty."""
     from huggingface_hub import hf_hub_download
-    if not hf.repo_exists(repo, repo_type="dataset") or not hf.file_exists(repo, MANIFEST, repo_type="dataset"):
+    if not hf.repo_exists(repo, repo_type="dataset"):
+        return {}
+    if hf.file_exists(repo, LAYOUT_FILE, repo_type="dataset"):
+        _raise_layout(int(Path(hf_hub_download(repo, LAYOUT_FILE, repo_type="dataset", force_download=True))
+                          .read_text().strip() or 2))
+    if not hf.file_exists(repo, MANIFEST, repo_type="dataset"):
+        if layout2():
+            raise SystemExit(f"{repo}: layout {_LAYOUT['remote']} store without {MANIFEST}; refusing to treat it as empty")
         return {}
     path = hf_hub_download(repo, MANIFEST, repo_type="dataset", force_download=True)
     meta = json.loads(Path(path).read_text())
-    _LAYOUT["remote"] = int(meta.get("layout", 1))
-    return meta["files"]
+    _raise_layout(int(meta.get("layout", 1)))
+    if _seen_layout() > _LAYOUT["remote"] and not allow_downgraded:
+        raise SystemExit(f"{repo} reads as layout {_LAYOUT['remote']} but this checkout has seen layout "
+                         f"{_seen_layout()}: the layout was downgraded by some writer; run `store_sync.py repair`")
+    return meta["entries"] if "entries" in meta else meta["files"]
 
 
 def layout2() -> bool:
@@ -407,13 +444,17 @@ def push(repo: str, dry_run: bool = False, allow_shrink: bool = False, only: Lis
         shutil.rmtree(snap_root, ignore_errors=True)
     # Re-read the stored manifest right before replacing it, so entries another writer added meanwhile (e.g. the
     # laptop's sealed parts during a CI run) are kept: ours win only for the files this push uploaded.
+    planned_layout2 = layout2()
     fresh = remote_manifest(hf, repo)
+    if layout2() and not planned_layout2:  # planned as layout 1 (e.g. docs files merged + uploaded): do not record it
+        raise SystemExit(f"{repo} became layout {_LAYOUT['remote']} during this push; refusing to write a layout-1 "
+                         "manifest (re-run: the push is planned again for the current layout)")
     ours = set(changed) | set(extra or {})
     new_manifest = {**fresh, **{p: new_manifest[p] for p in ours}, **{p: v for p, v in new_manifest.items() if p not in fresh}}
     for p in deletes:
         new_manifest.pop(p, None)
     ops = [CommitOperationDelete(p) for p in deletes]
-    ops += [CommitOperationAdd("README.md", CARD.encode()), _manifest_op(new_manifest)]
+    ops += [CommitOperationAdd("README.md", CARD.encode()), *_manifest_ops(new_manifest)]
     hf.create_commit(repo, repo_type="dataset", commit_message="store: manifest", operations=ops)
     if any(p.startswith(IDS) for p in changed):
         _ids_synced({**_ids_synced(), **{p: new_manifest[p]["sha256"] for p in changed if p.startswith(IDS)}})
@@ -424,12 +465,20 @@ def push(repo: str, dry_run: bool = False, allow_shrink: bool = False, only: Lis
     return rep
 
 
-def _manifest_op(files: Dict[str, dict], layout: int | None = None):
+def _manifest_ops(files: Dict[str, dict], layout: int | None = None) -> list:
+    """Commit operations that store the manifest (+ the LAYOUT marker from layout 2 on). Never writes a layout
+    below the highest one this process has seen."""
     from huggingface_hub import CommitOperationAdd
-    meta = {"updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "files": files}
-    if (layout or _LAYOUT["remote"]) >= 2:
-        meta["layout"] = layout or _LAYOUT["remote"]
-    return CommitOperationAdd(MANIFEST, json.dumps(meta, indent=0, sort_keys=True).encode())
+    if layout is not None:
+        _raise_layout(layout)
+    lay = _LAYOUT["remote"]
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if lay < 2:
+        return [CommitOperationAdd(MANIFEST, json.dumps({"updated": stamp, "files": files}, indent=0,
+                                                        sort_keys=True).encode())]
+    meta = {"updated": stamp, "layout": lay, "entries": files}
+    return [CommitOperationAdd(MANIFEST, json.dumps(meta, indent=0, sort_keys=True).encode()),
+            CommitOperationAdd(LAYOUT_FILE, f"{lay}\n".encode())]
 
 
 # ---------------------------------------------------------------------------------------------- layout 2: seal
@@ -578,7 +627,7 @@ def migrate(repo: str, force: bool = False) -> dict:
             files[rel] = {"sha256": sha256(f), "bytes": f.stat().st_size}
         ops = [CommitOperationDelete(p) for p in legacy]
         ops += [CommitOperationAdd(rel, str(f)) for rel, f in ids_new.items()]
-        ops += [CommitOperationAdd("README.md", CARD.encode()), _manifest_op(files, layout=2)]
+        ops += [CommitOperationAdd("README.md", CARD.encode()), *_manifest_ops(files, layout=2)]
         hf.create_commit(repo, repo_type="dataset", commit_message="store: segmented layout (docs -> docs-parts)",
                          operations=ops)
         _LAYOUT["remote"] = 2
@@ -589,6 +638,92 @@ def migrate(repo: str, force: bool = False) -> dict:
     rep = {"legacy_files": len(legacy), "parts": len(entries), "documents": sum(v["lines"] for v in entries.values()),
            "bad_lines": bad_total, "parts_mb": round(sum(v["bytes"] for v in entries.values()) / 1e6, 1)}
     logger.info("migrated: %s", rep)
+    return rep
+
+
+def repair(repo: str, force: bool = False) -> dict:
+    """Layout 2 store with stray docs/<CC>/<source>.jsonl (uploaded by a writer that saw layout 1): restore the
+    layout, seal every stray line whose id is not sealed yet into one verified part, record the ids, then delete the
+    stray files from the store. A store counts as migrated when it holds docs-parts/legacy/ parts."""
+    import subprocess
+    from huggingface_hub import CommitOperationAdd, CommitOperationDelete
+    if not force:
+        r = subprocess.run(["gh", "run", "list", "--repo", "jonawalb/rhetoric-corpus", "--status", "in_progress",
+                            "--json", "databaseId", "-q", ".[].databaseId"], capture_output=True, text=True)
+        if r.returncode != 0 or r.stdout.strip():
+            raise SystemExit(f"a CI run is in progress (or gh failed: {r.stderr.strip()}); not repairing")
+    hf = api()
+    remote = remote_manifest(hf, repo, allow_downgraded=True)
+    if not layout2():
+        if not any(p.startswith(PARTS + "legacy/") for p in remote_parts(hf, repo, remote)):
+            raise SystemExit(f"{repo} was never migrated (no {PARTS}legacy/ parts); nothing to repair")
+        logger.warning("%s: layout key lost; restoring layout 2", repo)
+        _raise_layout(2)
+    stray = sorted(p for p in remote if p.startswith("docs/") and p.endswith(".jsonl"))
+    work = ROOT / "staging" / "repair"
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    rep = {"stray_files": len(stray), "stray_lines": 0, "already_sealed": 0, "new": 0, "bad": 0}
+    with segments.seal_lock(ROOT):
+        refresh_ids(hf, repo, remote)
+        work.mkdir(parents=True, exist_ok=True)
+        local_part = work / f"{stamp}-repair.jsonl.gz"
+        new_ids: Dict[str, List[str]] = {}
+        import gzip
+        with local_part.open("wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
+            for p in stray:
+                cc, src = p.split("/")[1], Path(p).stem
+                sealed = segments.read_ids(segments.ids_file(ROOT, cc, src))
+                mine = new_ids.setdefault(f"{cc}/{src}", [])
+                seen = set(mine)
+                dl = _download(repo, p)
+                for line in segments.open_lines(dl):
+                    rep["stray_lines"] += 1
+                    did = segments.line_id(line)
+                    try:
+                        ok = did is not None and isinstance(json.loads(line), dict)
+                    except ValueError:
+                        ok = False
+                    if not ok:
+                        with (work / f"{cc}_{src}.bad.jsonl").open("ab") as q:
+                            q.write(line)
+                        rep["bad"] += 1
+                    elif did in sealed or did in seen:
+                        rep["already_sealed"] += 1
+                    else:
+                        seen.add(did)
+                        mine.append(did)
+                        gz.write(line)
+                dl.unlink()
+        rep["new"] = sum(len(v) for v in new_ids.values())
+        entry = {}
+        if rep["new"]:
+            h = sha256(local_part)
+            remote_path = segments.part_remote(stamp, "repair", h)
+            up = HubUploader(hf, repo)
+            if not up.verify(remote_path, h, rep["new"]):
+                up.upload(local_part, remote_path)
+                if not up.verify(remote_path, h, rep["new"]):
+                    raise SystemExit(f"{remote_path} does not verify in the store; nothing deleted")
+            entry = {remote_path: {"sha256": h, "bytes": local_part.stat().st_size, "lines": rep["new"]}}
+            rep["part"] = remote_path
+            for key, ids in new_ids.items():  # stored and verified: now the ids count as sealed
+                if ids:
+                    cc, src = key.split("/", 1)
+                    segments.append_ids(segments.ids_file(ROOT, cc, src), ids, f"repair {stamp} {remote_path}")
+        _raise_layout(2)
+        fresh = remote_manifest(hf, repo, allow_downgraded=True)
+        late = [p for p in fresh if p.startswith("docs/") and p.endswith(".jsonl") and p not in stray]
+        if late or any(fresh[p]["sha256"] != remote[p]["sha256"] for p in stray if p in fresh):
+            raise SystemExit(f"stray docs changed during the repair ({late[:5]}); part kept, nothing deleted; re-run")
+        files = {p: v for p, v in fresh.items() if p not in stray}
+        files.update(entry)
+        ops = [CommitOperationDelete(p) for p in stray if p in fresh]
+        ops += [CommitOperationAdd("README.md", CARD.encode()), *_manifest_ops(files, layout=2)]
+        hf.create_commit(repo, repo_type="dataset", commit_message=f"store: repair layout 2, seal {len(stray)} stray docs files",
+                         operations=ops)
+        local_part.unlink(missing_ok=True)
+    rep["ids_push"] = push(repo, only=["state/ids"])
+    logger.info("repair: %s", rep)
     return rep
 
 
@@ -619,7 +754,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=["pull", "push", "verify", "squash", "seal", "migrate", "layout"])
+    ap.add_argument("cmd", choices=["pull", "push", "verify", "squash", "seal", "migrate", "layout", "repair"])
     ap.add_argument("--repo", default=REPO)
     ap.add_argument("--only", help="comma list of top folders (docs,state,raw,index/semantic,reports,logs/ci)")
     ap.add_argument("--dry-run", action="store_true")
@@ -632,7 +767,7 @@ def main() -> None:
     ap.add_argument("--all-parts", action="store_true", help="pull: every part, not only the ones not yet indexed")
     ap.add_argument("--force", action="store_true", help="migrate: skip the CI-in-progress check")
     a = ap.parse_args()
-    if a.cmd in ("push", "seal", "migrate"):  # one store writer per checkout at a time (offload loop vs manual runs)
+    if a.cmd in ("push", "seal", "migrate", "repair"):  # one store writer per checkout at a time (offload loop vs manual runs)
         import fcntl
         (ROOT / "staging" / "seal").mkdir(parents=True, exist_ok=True)
         lockf = open(ROOT / "staging" / "seal" / ".store.lock", "w")
@@ -643,6 +778,8 @@ def main() -> None:
         print(json.dumps({k: v for k, v in seal(a.repo, a.keep_parts, a.writer).items()}, default=str))
     elif a.cmd == "migrate":
         print(json.dumps(migrate(a.repo, a.force)))
+    elif a.cmd == "repair":
+        print(json.dumps(repair(a.repo, a.force)))
     elif a.cmd == "layout":
         remote_manifest(api(), a.repo)
         print(_LAYOUT["remote"])

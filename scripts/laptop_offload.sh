@@ -17,7 +17,10 @@ KEEP_RAW=(by_president ir_presstv kp_rodong_en ir_khamenei_en)   # = store_sync.
 mkdir -p logs staging/raw-archive
 
 offload_once() {
-  if [[ $(uv run --no-sync python scripts/store_sync.py layout 2>/dev/null | tail -1) == 2 ]]; then
+  layout=$(uv run --no-sync python scripts/store_sync.py layout 2>/dev/null | tail -1)
+  if [[ $layout != [12] ]]; then
+    echo "== $(date) store layout unreadable (${layout:-no output}); docs left for the next round"
+  elif [[ $layout == 2 ]]; then
     echo "== $(date) docs seal (docs/ before: $(du -sh docs | cut -f1))"
     uv run --no-sync python scripts/store_sync.py seal 2>&1 | tail -2
     echo "docs/ after: $(du -sh docs | cut -f1)"

@@ -290,8 +290,10 @@ def hub(root, monkeypatch):
 
 
 def write_manifest(h: FakeHub, files: dict, layout: int = 1) -> None:
-    meta = {"files": files, **({"layout": layout} if layout > 1 else {})}
+    meta = {"entries": files, "layout": layout} if layout > 1 else {"files": files}
     (h.d / "manifest.json").write_text(json.dumps(meta))
+    if layout > 1:
+        (h.d / "LAYOUT").write_text(f"{layout}\n")
 
 
 def test_migrate_then_seal_then_ci_pull(root, hub):
@@ -306,14 +308,15 @@ def test_migrate_then_seal_then_ci_pull(root, hub):
     rep = store_sync.migrate("me/store", force=True)
     assert rep["documents"] == 3 and rep["parts"] == 1
     meta = json.loads((hub.d / "manifest.json").read_text())
-    assert meta["layout"] == 2 and "docs/ZZ/zz_t.jsonl" not in meta["files"] and "state/x.json" in meta["files"]
+    assert meta["layout"] == 2 and "docs/ZZ/zz_t.jsonl" not in meta["entries"] and "state/x.json" in meta["entries"]
+    assert (hub.d / "LAYOUT").read_text().strip() == "2"
     assert not (hub.d / "docs" / "ZZ" / "zz_t.jsonl").exists()
     assert lib.sealed_ids("ZZ", "zz_t") == {f"zz_t:{i}" for i in range(3)}
     # first laptop seal: only the unpushed document becomes a part, the local file is cut
     rep = store_sync.seal("me/store")
     assert rep["lines"] == 1 and rep["dropped_sealed"] == 3 and active_ids(root) == []
     meta = json.loads((hub.d / "manifest.json").read_text())
-    parts = sorted(p for p in meta["files"] if p.startswith("docs-parts/"))
+    parts = sorted(p for p in meta["entries"] if p.startswith("docs-parts/"))
     assert len(parts) == 2 and meta["layout"] == 2
     assert sorted(stored_ids(hub.d / "docs-parts")) == [f"zz_t:{i}" for i in range(4)]
     assert segments.read_ids(hub.d / "state/ids/ZZ/zz_t.ids") == {f"zz_t:{i}" for i in range(4)}
@@ -328,13 +331,14 @@ def test_migrate_then_seal_then_ci_pull(root, hub):
     con.close()
     (hub.d / "index").mkdir()
     shutil.copyfile(ci / "index" / "corpus.sqlite", hub.d / "index" / "corpus.sqlite")
-    files = json.loads((hub.d / "manifest.json").read_text())["files"]
+    files = json.loads((hub.d / "manifest.json").read_text())["entries"]
     files["index/corpus.sqlite"] = {"sha256": sha(hub.d / "index/corpus.sqlite"),
                                     "bytes": (hub.d / "index/corpus.sqlite").stat().st_size}
     del files["state/x.json"]
     write_manifest(hub, files, 2)
     store_sync.ROOT = ci
     store_sync.MARKER = ci / ".store_pulled"
+    store_sync._LAYOUT["remote"] = 1                                         # a fresh process (the CI job)
     rep = store_sync.pull("me/store", None)
     assert rep["parts_downloaded"] == 1 and rep["parts_indexed"] == 1
     assert not (ci / parts[0]).exists() and (ci / parts[1]).exists()
@@ -368,3 +372,90 @@ def test_legacy_part_conversion(tmp_path):
     assert ids == ["zz_t:1", "zz_t:2"] and n == 2 and bad == 1
     with gzip.open(tmp_path / "out" / "a.jsonl.gz", "rt") as f:
         assert [json.loads(ln)["id"] for ln in f] == ["zz_t:1", "zz_t:2"]
+
+
+# ---------------------------------------------------------------------------------------------- layout is sticky
+def _migrated_store(root, hub) -> None:
+    (hub.d / "docs" / "ZZ").mkdir(parents=True)
+    (hub.d / "docs" / "ZZ" / "zz_t.jsonl").write_text("".join(json.dumps(row(i)) + "\n" for i in range(3)))
+    write_manifest(hub, {"docs/ZZ/zz_t.jsonl": {"sha256": sha(hub.d / "docs/ZZ/zz_t.jsonl"), "bytes": 1}})
+    store_sync.migrate("me/store", force=True)
+
+
+def old_code_push_manifest(hub) -> None:
+    """What store_sync before the segmented store did on any push: rewrite manifest.json as {updated, files}
+    from what it read (it kept remote-only entries, dropped every other key, never deleted LAYOUT)."""
+    meta = json.loads((hub.d / "manifest.json").read_text())
+    files = meta["entries"] if "entries" in meta else meta["files"]       # (old code: meta["files"] -> KeyError)
+    (hub.d / "manifest.json").write_text(json.dumps({"updated": "x", "files": files}))
+
+
+def test_old_code_cannot_read_the_layout2_manifest(root, hub):
+    _migrated_store(root, hub)
+    with pytest.raises(KeyError):
+        json.loads((hub.d / "manifest.json").read_text())["files"]      # pre-segment remote_manifest() fails loudly
+
+
+def test_layout_survives_a_manifest_rewrite_without_the_key(root, hub):
+    """Regression 2026-10-04: an older checkout's push dropped "layout" and every writer fell back to layout 1."""
+    _migrated_store(root, hub)
+    old_code_push_manifest(hub)
+    store_sync._LAYOUT["remote"] = 1                                         # a new process
+    store_sync.remote_manifest(hub, "me/store")
+    assert store_sync.layout2()                                              # the LAYOUT marker wins
+    lib.write_docs("ZZ", "zz_t", [row(7)])
+    store_sync.push("me/store", only=["docs", "state"])
+    assert not (hub.d / "docs" / "ZZ" / "zz_t.jsonl").exists()               # active docs never uploaded
+    meta = json.loads((hub.d / "manifest.json").read_text())
+    assert meta["layout"] == 2 and "entries" in meta                         # and the manifest is upgraded again
+
+
+def test_checkout_that_saw_layout2_refuses_a_downgraded_store(root, hub):
+    _migrated_store(root, hub)
+    old_code_push_manifest(hub)
+    (hub.d / "LAYOUT").unlink()                                              # even if the marker were lost too
+    store_sync._LAYOUT["remote"] = 1
+    with pytest.raises(SystemExit, match="downgraded"):
+        store_sync.remote_manifest(hub, "me/store")
+    with pytest.raises(SystemExit):
+        store_sync.push("me/store", only=["docs"])
+
+
+def test_layout1_push_refuses_when_the_store_becomes_layout2(root, hub, monkeypatch):
+    (hub.d / "x").mkdir()
+    write_manifest(hub, {})
+    lib.write_docs("ZZ", "zz_t", [row(1)])
+    real = store_sync.remote_manifest
+    calls = []
+
+    def flip(hf, repo, **kw):  # the second read (right before the manifest commit) sees a migrated store
+        calls.append(1)
+        if len(calls) == 2:
+            write_manifest(hub, {}, 2)
+        return real(hf, repo, **kw)
+    monkeypatch.setattr(store_sync, "remote_manifest", flip)
+    with pytest.raises(SystemExit, match="refusing"):
+        store_sync.push("me/store", only=["docs"])
+    assert json.loads((hub.d / "manifest.json").read_text())["layout"] == 2
+
+
+def test_repair_seals_stray_docs_and_restores_layout(root, hub):
+    _migrated_store(root, hub)                                               # zz_t:0..2 sealed (legacy part)
+    old_code_push_manifest(hub)
+    (hub.d / "LAYOUT").unlink()
+    stray = "".join(json.dumps(row(i)) + "\n" for i in (1, 2, 5, 6, 6)) + "garbage\n"
+    (hub.d / "docs" / "ZZ").mkdir(parents=True, exist_ok=True)
+    (hub.d / "docs" / "ZZ" / "zz_t.jsonl").write_text(stray)
+    meta = json.loads((hub.d / "manifest.json").read_text())
+    meta["files"]["docs/ZZ/zz_t.jsonl"] = {"sha256": sha(hub.d / "docs/ZZ/zz_t.jsonl"), "bytes": len(stray)}
+    (hub.d / "manifest.json").write_text(json.dumps(meta))
+    store_sync._LAYOUT["remote"] = 1
+    rep = store_sync.repair("me/store", force=True)
+    assert rep["new"] == 2 and rep["already_sealed"] == 3 and rep["bad"] == 1
+    meta = json.loads((hub.d / "manifest.json").read_text())
+    assert meta["layout"] == 2 and (hub.d / "LAYOUT").exists() and not (hub.d / "docs" / "ZZ" / "zz_t.jsonl").exists()
+    assert sorted(stored_ids(hub.d / "docs-parts")) == [f"zz_t:{i}" for i in (0, 1, 2, 5, 6)]   # all, once each
+    assert segments.read_ids(hub.d / "state/ids/ZZ/zz_t.ids") >= {f"zz_t:{i}" for i in (0, 1, 2, 5, 6)}
+    lib.write_docs("ZZ", "zz_t", [row(5), row(6), row(8)])                   # the local buffer: only zz_t:8 is new
+    assert store_sync.seal("me/store")["lines"] == 1
+    assert sorted(stored_ids(hub.d / "docs-parts")) == [f"zz_t:{i}" for i in (0, 1, 2, 5, 6, 8)]
