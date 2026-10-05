@@ -194,7 +194,10 @@ uv run python -m scripts.semantic.run search "warnings that arms deliveries cros
 uv run python -m scripts.semantic.run --stage audit        # gazetteer audit  -> reports/semantic/target_audit.md
 uv run python -m scripts.semantic.run --stage echo-tune    # echo threshold audit -> reports/semantic/echo_threshold_audit.md
 uv run python -m scripts.semantic.run --stage export       # blind human-coding sample -> reports/semantic/validation_sample.csv
-uv run python -m scripts.semantic.run validate <coded.csv> # agreement of human codes with student and teacher
+uv run python -m scripts.semantic.run --stage export --per-lang-min 30   # top up that sample to >= 30 sentences per language
+uv run python -m scripts.semantic.run validate coderA.xlsx [coderB.xlsx] [--key KEY.csv] [--out DIR]
+                                                            # human codes vs student/teacher (AUC, F1, kappa) + Krippendorff's alpha
+uv run --with openpyxl --with python-docx python -m scripts.semantic.packet --blind SAMPLE.csv --out DIR   # coder workbook + codebook
 ```
 
 Analyst UI (private, local): `uv run python scripts/serve_search.py` → http://127.0.0.1:8950/ (keyword + semantic
@@ -246,7 +249,8 @@ M3 (embedding ~15 min, scoring ~50 min); an incremental run with 5,000 new docum
 
 **Limits (read before using numbers).**
 - Validation so far is teacher–student agreement only (reports/semantic/tone_validation.md); nobody has yet checked the
-  teacher against expert human coding. Code `reports/semantic/validation_sample.csv` and run `validate` before citing levels.
+  teacher against expert human coding. The coder packet (418 sentences, >= 30 per language, codebook, blind key) is in
+  `reports/semantic/validation/` (private store; see its README); code it and run `validate` before citing levels.
 - Grievance/victimhood is under-detected by the teacher (low recall on the hand-labelled check).
 - Stance is "tone of sentences mentioning X", not tone directed at X.
 - Languages with little or no teacher data (fa, ur, tr; es/ar/ko once those sources land) have unmeasured accuracy.

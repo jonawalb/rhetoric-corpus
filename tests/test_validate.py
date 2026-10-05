@@ -137,3 +137,13 @@ def test_score_single_coder_has_no_alpha(tmp_path: Path) -> None:
     assert list(res["coders"]) == ["solo"] and "krippendorff_alpha" not in res["dims"]["threat"]
     assert "Krippendorff" not in report_md(res, [str(b)])
 
+
+def test_packet_codebook_covers_every_dimension_and_order_is_stable() -> None:
+    from scripts.semantic.packet import CODEBOOK, CODING_COLS, order_rows
+
+    assert list(CODEBOOK) == list(DIMS)
+    for e in CODEBOOK.values():
+        assert e["definition"] and len(e["positive"]) >= 3 and len(e["negative"]) >= 3
+    assert all(d in CODING_COLS for d in DIMS) and CODING_COLS[0] == "sample_id"
+    rows = [{"sample_id": f"v{i:04d}"} for i in range(50)]
+    assert order_rows(rows) == order_rows(list(reversed(rows))) != rows
