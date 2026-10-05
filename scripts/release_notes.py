@@ -232,7 +232,7 @@ FIELDS: List[Tuple[str, str, str, str]] = [
 
 COUNTRY_NOTES: List[str] = [
     "IR — Persian presidency pages carry Solar Hijri dates (e.g. '10 مهر 1405'); they are converted to Gregorian by the collector (ir_common, tested). English pages are Gregorian.",
-    "IR — `ir_khamenei_en`: the collector reports that site item news/12103 (2026-03-01) announces Ali Khamenei's death on 2026-02-28, so `speaker = Khamenei` is set only up to that date and null after. This is AGENT-REPORTED from the archived page and NOT independently verified; check before relying on it.",
+    "IR — `ir_khamenei_en`: the collector reports that site item news/12103 (2026-03-01) announces Ali Khamenei's death on 2026-02-28, so `speaker = Khamenei` is set only up to that date and null after. Verified against independent reporting: Khamenei was killed in a US-Israeli strike on Tehran on 2026-02-28, and Iran confirmed his death on 2026-03-01 (Al Jazeera, NPR and CNN, 2026-02-28).",
     "TW — Chinese-language government pages use ROC (Minguo) years (year + 1911); converted by tw_common.roc_date. The Presidential Office's JSON-LD datePublished is a bogus template value and is not used.",
     "SY — `period` = assad (date < 2024-12-08) or transitional; the corpus straddles a change of government, so split analyses by period.",
     "CU — MINREX dates are the Drupal node creation time in UTC, so a late-evening Havana posting can carry the next day's date.",
