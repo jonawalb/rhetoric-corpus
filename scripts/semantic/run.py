@@ -4,7 +4,7 @@
   uv run python -m scripts.semantic.run --stage embed,score   # selected stages
   uv run python -m scripts.semantic.run --full                # recompute (re-tag, re-score, refit topics)
   uv run python -m scripts.semantic.run search "query" [--country RU] [--k 10]
-  uv run python -m scripts.semantic.run validate reports/semantic/validation_sample_coded.csv
+  uv run python -m scripts.semantic.run validate coderA.xlsx [coderB.xlsx]   # human codes vs student/teacher
 
 Stages, in order: sync, targets, embed, teacher, train, active, train, score, topics, trends, echo, brief\n(`active` runs once; `train` re-fits only when the teacher sample grew >= 10 %).
 Extra stages (not in the default run): audit (gazetteer audit report), export (validation sample),\necho-tune (echo threshold audit report).
@@ -49,7 +49,9 @@ def _stage(name: str, con, a: argparse.Namespace) -> Dict:
         from .tone import run_score
         return run_score(con, full=a.full, budget_s=a.budget)
     if name == "export":
-        from .validate import export_sample
+        from .validate import BLIND, KEY, export_sample, topup_sample
+        if a.per_lang_min:
+            return topup_sample(con, store.corpus(), a.per_lang_min, BLIND, KEY, BLIND, KEY)
         return export_sample(con)
     if name == "topics":
         from .topics import run_topics
@@ -109,6 +111,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("--full", action="store_true", help="recompute tags/scores and refit topics")
     ap.add_argument("--refit-topics", action="store_true")
     ap.add_argument("--budget", type=float, default=None, help="seconds per embedding/scoring stage (time box)")
+    ap.add_argument("--per-lang-min", type=int, default=None,
+                    help="export: top up the existing validation sample to >= N sentences per language")
     ap.add_argument("--max-docs", type=int, default=None, help="cap on docs embedded this run (newest first)")
     a = ap.parse_args(argv)
     con = store.connect()
