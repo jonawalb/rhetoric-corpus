@@ -81,7 +81,7 @@ jobs:
 
       - name: Pull store (state, id indexes, index; only the document parts the index has not seen)
         id: pull
-        timeout-minutes: 40
+        timeout-minutes: 60   # 14 GB index + new parts took 38 min on 2026-10-05
         run: uv run --no-sync python scripts/store_sync.py pull
 
       - name: Collect
