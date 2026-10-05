@@ -12,6 +12,7 @@ Output (release/ is gitignored; nothing is uploaded anywhere):
   official_jsonl/<CC>.jsonl.gz   same rows as gzip JSON Lines
   media/<CC>.parquet             state_media / media / commentary: metadata only, no body text
   semantic/doc_scores.parquet    optional, when index/semantic has per-doc tone scores
+  coverage.csv                   country x outlet x source x language: first/last date, documents
   README.md CODEBOOK.md CHANGELOG.md ZENODO_METADATA.json MANIFEST.json SHA256SUMS
 
 Snapshot: --snapshot-date D keeps rows whose `fetched` is at or before the end of day D in the machine's local
@@ -24,6 +25,7 @@ smaller than the input) or when free disk after the build would drop below --min
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import logging
@@ -31,7 +33,7 @@ import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -88,6 +90,11 @@ def previous_manifest(out_root: Path, version: str) -> Optional[Dict[str, Any]]:
     return json.loads(max(older, key=lambda p: key(p.parent.name)).read_text(encoding="utf-8"))
 
 
+def metadata_only(row: Dict[str, Any]) -> bool:
+    """Official-outlet rows whose text is journalism or a forwarded post: released as metadata only."""
+    return row["source"] in release_docs.N.METADATA_ONLY_SOURCES or bool(row.get("forwarded"))
+
+
 def collect(files: List[Path], cutoff: datetime, d_from: Optional[str], d_to: Optional[str]) -> Dict[str, Any]:
     """Read, validate, filter and dedupe every input file; returns records grouped by country."""
     seen: set = set()
@@ -97,6 +104,8 @@ def collect(files: List[Path], cutoff: datetime, d_from: Optional[str], d_to: Op
     examples: Dict[str, List[str]] = defaultdict(list)
     excluded: Counter = Counter()
     inputs = []
+    # Publication dates later than the snapshot (one day of slack for time zones) are collector errors.
+    latest_date = (cutoff.date() + timedelta(days=1)).isoformat()
     for path in files:
         country, source = path.parent.name, path.stem
         rows, info = RD.read_snapshot(path)
@@ -112,6 +121,11 @@ def collect(files: List[Path], cutoff: datetime, d_from: Optional[str], d_to: Op
                 if len(examples[reason]) < 10:
                     examples[reason].append(f"{path.name}:{line_no} {str(row.get('id') if isinstance(row, dict) else '')[:80]}")
                 continue
+            if row["date"] > latest_date:
+                dropped["date_after_snapshot"] += 1
+                if len(examples["date_after_snapshot"]) < 10:
+                    examples["date_after_snapshot"].append(f"{path.name}:{line_no} {row['id'][:80]} {row['date']}")
+                continue
             fetched = RD.parse_ts(row.get("fetched"))
             if fetched is None:
                 excluded["no_fetched_time_kept"] += 1
@@ -125,7 +139,7 @@ def collect(files: List[Path], cutoff: datetime, d_from: Optional[str], d_to: Op
                 excluded["duplicate_id"] += 1
                 continue
             seen.add(row["id"])
-            if row["outlet"] == "official":
+            if row["outlet"] == "official" and not metadata_only(row):
                 official[country].append(RD.official_record(row))
             else:
                 media[country].append(RD.media_record(row))
@@ -138,9 +152,10 @@ def summarise(data: Dict[str, Any]) -> Dict[str, Any]:
     values: Dict[str, Counter] = defaultdict(Counter)
     speakers: Dict[str, Counter] = defaultdict(Counter)
     for kind in ("official", "media"):
+        release = "full_text" if kind == "official" else "metadata_only"
         for recs in data[kind].values():
             for r in recs:
-                g = groups.setdefault((r["country"], r["outlet"], r["source"], r["lang"]),
+                g = groups.setdefault((r["country"], r["outlet"], r["source"], r["lang"], release),
                                       {"n": 0, "first": r["date"], "last": r["date"], "orgs": Counter()})
                 g["n"] += 1
                 g["first"], g["last"] = min(g["first"], r["date"]), max(g["last"], r["date"])
@@ -151,14 +166,14 @@ def summarise(data: Dict[str, Any]) -> Dict[str, Any]:
                 if r.get("speaker"):
                     speakers[r["source"]][r["speaker"]] += 1
     coverage = []
-    for (cc, outlet, src, lang), g in sorted(groups.items()):
+    for (cc, outlet, src, lang, release), g in sorted(groups.items()):
         orgs = [o for o, _ in g["orgs"].most_common() if o]
         org = ", ".join(orgs) if len(orgs) <= 3 else f"{', '.join(orgs[:3])} +{len(orgs) - 3} more"
-        coverage.append({"country": cc, "outlet": outlet, "source": src, "lang": lang, "org": org,
+        coverage.append({"country": cc, "outlet": outlet, "source": src, "lang": lang, "release": release, "org": org,
                          "first": g["first"].isoformat(), "last": g["last"].isoformat(), "n": g["n"]})
     by_co: Counter = Counter()
     for c in coverage:
-        by_co[f"{c['country']}/{c['outlet']}"] += c["n"]
+        by_co[f"{c['country']}/{c['outlet']}/{c['release']}"] += c["n"]
     totals = {"official": sum(len(v) for v in data["official"].values()),
               "media": sum(len(v) for v in data["media"].values()),
               "countries": len({c["country"] for c in coverage}), "sources": len({c["source"] for c in coverage})}
@@ -216,8 +231,15 @@ def build(a: argparse.Namespace) -> Dict[str, Any]:
                            "bytes": (tmp / "semantic" / "doc_scores.parquet").stat().st_size})
     ctx = {"version": a.version, "build_time": now.isoformat(timespec="seconds"), "snapshot": snap,
            "build_date_local": now.astimezone().date().isoformat(),
-           "git": git_info(a.git_root), "semantic": semantic, "data_files": data_files,
+           "doi": a.doi, "git": git_info(a.git_root), "semantic": semantic, "data_files": data_files,
            "dropped_total": sum(data["dropped"].values()), **summary}
+    if (a.git_root / "SOURCES.md").exists():  # per-source collection log, referenced by README
+        shutil.copyfile(a.git_root / "SOURCES.md", tmp / "SOURCES.md")
+    with (tmp / "coverage.csv").open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["country", "outlet", "source", "lang", "release", "org", "first",
+                                          "last", "n"])
+        w.writeheader()
+        w.writerows(summary["coverage"])
     prev = previous_manifest(a.out_root, a.version)
     (tmp / "README.md").write_text(release_docs.render_readme(ctx), encoding="utf-8")
     (tmp / "CODEBOOK.md").write_text(release_docs.render_codebook(ctx), encoding="utf-8")
@@ -231,7 +253,7 @@ def build(a: argparse.Namespace) -> Dict[str, Any]:
         listing.append({"path": rel, "bytes": p.stat().st_size, "rows": rows, "sha256": sha256_file(p)})
     manifest = {
         "dataset": release_docs.N.TITLE, "version": a.version, "build_time": ctx["build_time"],
-        "snapshot": snap, "date_from": a.date_from, "date_to": a.date_to,
+        "doi": a.doi, "snapshot": snap, "date_from": a.date_from, "date_to": a.date_to,
         "countries_filter": sorted(c.upper() for c in a.countries) if a.countries else None,
         "corpus_repo": {"path": str(a.git_root), **ctx["git"]},
         "totals": summary["totals"], "rows_by_country_outlet": summary["rows_by_country_outlet"],
@@ -266,6 +288,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     ap.add_argument("--git-root", type=Path, default=ROOT)
     ap.add_argument("--max-gb", type=float, default=2.0, help="refuse if the selected input exceeds this")
     ap.add_argument("--min-free-gb", type=float, default=8.0, help="refuse if free disk could fall below this")
+    ap.add_argument("--doi", help="DOI reserved for this version (e.g. a Zenodo pre-reserved DOI); cited in README")
     ap.add_argument("--overwrite", action="store_true", help="replace an existing release/<version>")
     a = ap.parse_args(argv)
     for d in (a.date_from, a.date_to):

@@ -16,11 +16,17 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 DIMS = ("hostility", "threat", "conciliation", "grievance", "escalation", "deescalation")
+# Tone scores are checked only against the NLI teacher (teacher-student agreement); expert human coding is pending.
+VALIDATION_STATUS = "not_human_validated"
 SCHEMA = pa.schema(
     [("id", pa.string()), ("country", pa.string()), ("source", pa.string()), ("outlet", pa.string()),
      ("nsent_scored", pa.int32())] + [(d, pa.float32()) for d in DIMS]
     + [("tone_model_v", pa.string()), ("topic", pa.int32()), ("topic_label", pa.string()),
-       ("topic_sim", pa.float32()), ("topic_v", pa.string()), ("targets", pa.list_(pa.string()))])
+       ("topic_sim", pa.float32()), ("topic_v", pa.string()), ("targets", pa.list_(pa.string())),
+       ("validation_status", pa.string())],
+    metadata={"validation_status": VALIDATION_STATUS,
+              "validation_note": "Tone scores are validated against an NLI teacher model only (teacher-student "
+                                 "agreement). They have NOT yet been validated against expert human coding."})
 
 
 def _connect(db: Path) -> sqlite3.Connection:
@@ -80,7 +86,8 @@ def export(sem_dir: Path, meta: Dict[str, Dict[str, Optional[str]]], out_dir: Pa
         row = {"id": doc_id, **meta[doc_id], "nsent_scored": t[0] if t else None,
                "tone_model_v": t[-1] if t else None, "topic": tp[0] if tp else None,
                "topic_label": labels.get(tp[0]) if tp else None, "topic_sim": tp[1] if tp else None,
-               "topic_v": tp[2] if tp else None, "targets": targets.get(doc_id)}
+               "topic_v": tp[2] if tp else None, "targets": targets.get(doc_id),
+               "validation_status": VALIDATION_STATUS}
         row.update({d: (t[i + 1] if t else None) for i, d in enumerate(DIMS)})
         rows.append(row)
     dest = out_dir / "semantic"
@@ -90,4 +97,4 @@ def export(sem_dir: Path, meta: Dict[str, Dict[str, Optional[str]]], out_dir: Pa
         src = sem_dir / "aggregates" / name
         if src.exists():
             shutil.copyfile(src, dest / f"semantic_{name}")
-    return {"included": True, "rows": len(rows), **st}
+    return {"included": True, "rows": len(rows), "validation_status": VALIDATION_STATUS, **st}

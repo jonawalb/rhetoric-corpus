@@ -11,6 +11,8 @@ TITLE = "Multilingual State Rhetoric Corpus"
 AUTHOR = "Walberg, Jonathan"
 ORCID = "0009-0000-2065-8481"
 AFFILIATION = "University of Virginia"
+# Public code repository (collectors, export script); linked from the Zenodo record as supplementary software.
+REPO_URL = "https://github.com/jonawalb/rhetoric-corpus"
 
 PURPOSE = (
     "A multilingual corpus of official government statements (foreign ministries, presidencies, defence "
@@ -42,6 +44,19 @@ COLLECTION_METHOD = [
     "No keyword filter is used for collection unless stated per source below. Old keyword-filtered rows are "
     "flagged (`sample = backfill` or `seed`) and should be excluded from topic-share estimates.",
 ]
+
+# Copyright rule for the release: full text is shipped only for government documents. These sources are
+# classed `outlet = official` in the corpus but carry newspaper or journal journalism (bylined articles,
+# reprints), so the release treats them like media: metadata, word count and text hash only.
+METADATA_ONLY_SOURCES: Dict[str, str] = {
+    "rg_ru": "Rossiyskaya Gazeta, the government newspaper: mostly bylined journalism, not only official acts.",
+    "ir_irannewspaper_fa": "Iran, the government daily published by IRNA: newspaper journalism.",
+    "cn_qiushi": "Qiushi / Hongqi Wengao, Party theory journals: bylined articles besides leaders' speeches.",
+}
+# Posts an official Telegram channel forwarded from another channel (often a media outlet) are not the
+# channel's own words: metadata only.
+FORWARDED_NOTE = ("Forwarded posts in official Telegram channels (telegram_ru, `forwarded` in `extra`) are "
+                  "metadata only: they often reproduce media channels.")
 
 # source -> (collection, sampling rule). Keep each to one or two sentences.
 SOURCE_NOTES: Dict[str, Tuple[str, str]] = {
@@ -132,15 +147,19 @@ KNOWN_GAPS: List[str] = [
     "US: www.state.gov answers 403 to the collector (bot wall), so post-January 2025 State Department material "
     "comes from Wayback captures only; 2021-2025 press statements under opaque URLs were not collected. White "
     "House press-secretary briefings after January 2025 are video only and not covered.",
-    "China: full-text state media covers 2026-04 → 2026-06 only (headlines 2025-01 → 2026-06). The imported "
-    "MFA rows for Jul–Sep 2026 are Taiwan Q&A only; `mfa_cn_live` fills the conference transcripts. MND archive "
-    "rows have no item URL.",
+    "China: the imported state-media export has full text for 2026-04 → 2026-06 only (headlines 2025-01 → "
+    "2026-06). Live state-media collectors (Xinhua, People's Daily, CGTN, Global Times, China Daily, PLA Daily, "
+    "CCTV, China News Service, Huanqiu) started on 2026-10-03/04 and walk newest-first, so their depth differs "
+    "by outlet; People's Daily e-paper days before 2023 are closed (403). The imported MFA rows for Jul–Sep 2026 "
+    "are Taiwan Q&A only; `mfa_cn_live` and `mfa_cn_archive` fill the transcripts. MND archive rows have no item "
+    "URL. China Coast Guard is Wayback-only (live site WAF).",
     "Russia: mid.ru forbids listing pagination in robots.txt, so older MFA items depend on the Wayback URL "
     "index; mil.ru is Wayback-only and the new 2025 site is not covered; tass.ru is RSS leads only (403); "
     "RT year sitemaps stopped updating in June 2026 (gap mid-June → late September 2026).",
-    "Iran: live mfa.ir is behind an ArvanCloud challenge (only the imported English set is present); IRNA and "
-    "Tasnim are blocked or unreachable; khamenei.ir is Wayback-only (English; Persian not started); leader.ir "
-    "not collected (ambiguous robots response).",
+    "Iran: live mfa.ir is behind an ArvanCloud challenge (English comes from an earlier import and Wayback "
+    "only); IRNA, Fars, Mehr, ISNA and Tehran Times are blocked or unreachable from the collection host. "
+    "khamenei.ir is Wayback-only. Most Persian state-media collectors started on 2026-10-03/04 and walk "
+    "newest-first, so many cover only recent months in this snapshot.",
     "Pakistan: ISPR is Wayback-only, no captures after mid-2024. India: Hindi MEA pages not collected.",
     "Taiwan: Presidential Office ZH is blocked by a CDN cookie loop; MND robots.txt disallows all; MAC is "
     "Wayback-only; Focus Taiwan archive items are truncated to the lead behind a subscription notice.",

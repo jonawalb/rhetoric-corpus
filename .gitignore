@@ -1,5 +1,6 @@
 # Data stays out of git (large, and full texts are private). Code, SOURCES.md and terms are versioned.
 docs/
+docs-parts/
 raw/
 index/
 state/

@@ -37,18 +37,19 @@ def country_summary(ctx: Dict[str, Any]) -> List[List[Any]]:
     by: Dict[str, Counter] = defaultdict(Counter)
     span: Dict[str, List[str]] = {}
     for c in ctx["coverage"]:
-        by[c["country"]][c["outlet"]] += c["n"]
+        by[c["country"]][c.get("release", "full_text" if c["outlet"] == "official" else "metadata_only")] += c["n"]
         lo, hi = span.get(c["country"], [c["first"], c["last"]])
         span[c["country"]] = [min(lo, c["first"]), max(hi, c["last"])]
     rows = []
     for cc in sorted(by):
-        media = sum(v for k, v in by[cc].items() if k != "official")
-        rows.append([cc, _fmt(by[cc]["official"]), _fmt(media), span[cc][0], span[cc][1]])
+        rows.append([cc, _fmt(by[cc]["full_text"]), _fmt(by[cc]["metadata_only"]), span[cc][0], span[cc][1]])
     return rows
 
 
 def coverage_rows(ctx: Dict[str, Any], official: bool) -> List[List[Any]]:
-    rows = [c for c in ctx["coverage"] if (c["outlet"] == "official") == official]
+    rows = [c for c in ctx["coverage"]
+            if c.get("release", "full_text" if c["outlet"] == "official" else "metadata_only")
+            == ("full_text" if official else "metadata_only")]
     rows.sort(key=lambda c: (c["country"], c["outlet"], c["source"], c["lang"]))
     out = []
     for c in rows:
@@ -59,8 +60,9 @@ def coverage_rows(ctx: Dict[str, Any], official: bool) -> List[List[Any]]:
 
 def citation(ctx: Dict[str, Any]) -> str:
     year = ctx["build_time"][:4]
-    return (f"Walberg, Jonathan. {year}. *{N.TITLE}*, v{ctx['version']} [Data set]. Zenodo. "
-            f"https://doi.org/10.5281/zenodo.XXXXXXX (DOI to be assigned). ORCID {N.ORCID}.")
+    doi = ctx.get("doi")
+    link = f"https://doi.org/{doi}" if doi else "https://doi.org/10.5281/zenodo.XXXXXXX (DOI to be assigned)"
+    return f"Walberg, Jonathan. {year}. *{N.TITLE}*, v{ctx['version']} [Data set]. Zenodo. {link}. ORCID {N.ORCID}."
 
 
 def _semantic_text(ctx: Dict[str, Any]) -> str:
@@ -68,8 +70,11 @@ def _semantic_text(ctx: Dict[str, Any]) -> str:
     if sem.get("included"):
         return (f"`semantic/doc_scores.parquet` holds model scores for {_fmt(sem['rows'])} documents, keyed by `id`: "
                 "tone (hostility, threat, conciliation, grievance, escalation, deescalation; probabilities 0-1), "
-                "topic cluster and label, and the non-self targets mentioned. Tone agreement is measured against an "
-                "NLI teacher model, not human coders (`semantic/semantic_validation.json`).")
+                "topic cluster and label, and the non-self targets mentioned. **The tone scores are not yet "
+                "human-validated** (`validation_status = not_human_validated`): agreement has been measured only "
+                "between the student classifiers and the NLI teacher model that labelled their training data "
+                "(`semantic/semantic_validation.json`), not against expert human coding, which is in progress. "
+                "Treat levels as provisional; within-source changes over time are the safer use.")
     return f"Not included in this version: {sem.get('reason', 'semantic layer not available')}."
 
 
@@ -88,15 +93,18 @@ def render_readme(ctx: Dict[str, Any]) -> str:
         "## Contents",
         "```\n" + "\n".join(f"{f['path']:<40} {f['rows']:>9} rows  {f['bytes'] / 1e6:8.1f} MB"
                             for f in ctx["data_files"]) +
-        "\nREADME.md  CODEBOOK.md  CHANGELOG.md  MANIFEST.json  SHA256SUMS  ZENODO_METADATA.json\n```",
+        "\ncoverage.csv  SOURCES.md  README.md  CODEBOOK.md  CHANGELOG.md  MANIFEST.json  SHA256SUMS  ZENODO_METADATA.json\n```",
         "- `official/<CC>.parquet` — every `outlet = official` document with full text and all fields (Parquet, zstd).\n"
         "- `official_jsonl/<CC>.jsonl.gz` — the same rows as gzip JSON Lines for systems without Parquet tools.\n"
         "- `media/<CC>.parquet` — state-media, media and commentary items: metadata, word count and SHA-256 of the "
-        "text only. **No body text** (copyright).\n"
+        "text only. **No body text** (copyright). It also holds, as metadata only, the official-outlet sources "
+        "that publish journalism (" + ", ".join(f"`{k}`" for k in N.METADATA_ONLY_SOURCES) + ") and forwarded "
+        "posts in official Telegram channels; their `outlet` stays `official`.\n"
         "- `semantic/` — optional model scores (see below).\n"
+        "- `coverage.csv` — one row per country × outlet × source × language: first and last date, documents.\n"
         "- `CODEBOOK.md` documents every field. `MANIFEST.json` lists every file with size, rows and SHA-256, the "
         "input files read, and rows dropped by validation.",
-        "## Coverage by country", md_table(["Country", "Official docs", "Media items", "First", "Last"],
+        "## Coverage by country", md_table(["Country", "Full-text docs", "Metadata-only items", "First", "Last"],
                                            country_summary(ctx)),
         "## Coverage: official documents (full text)",
         md_table(["Country", "Source", "Org", "Lang", "First", "Last", "Docs"], coverage_rows(ctx, True)),
@@ -105,7 +113,7 @@ def render_readme(ctx: Dict[str, Any]) -> str:
         "## Collection method", "\n".join(f"- {x}" for x in N.COLLECTION_METHOD),
         "## Sampling rules per source",
         md_table(["Source", "Collection", "Sampling"], notes)
-        + (f"\n\nNo notes yet for: {', '.join(missing)} (see the corpus SOURCES.md)." if missing else ""),
+        + (f"\n\nNo notes yet for: {', '.join(missing)} (see SOURCES.md, the per-source collection log shipped with the release)." if missing else ""),
         "## Known gaps and blockers", "\n".join(f"- {x}" for x in N.KNOWN_GAPS),
         "## Analytic caveats", "\n".join(f"- {x}" for x in N.CAVEATS),
         "## Semantic scores", _semantic_text(ctx),
@@ -131,13 +139,16 @@ def render_readme(ctx: Dict[str, Any]) -> str:
         "  author    = {Walberg, Jonathan},\n"
         f"  title     = {{{N.TITLE}}},\n  version   = {{{ctx['version']}}},\n"
         f"  year      = {{{ctx['build_time'][:4]}}},\n  publisher = {{Zenodo}},\n"
-        "  doi       = {10.5281/zenodo.XXXXXXX},\n  note      = {ORCID " + N.ORCID + "}\n}\n```",
+        "  doi       = {" + (ctx.get("doi") or "10.5281/zenodo.XXXXXXX") + "},\n  note      = {ORCID " + N.ORCID
+        + "}\n}\n```",
         "## License",
         "- Curation, metadata, derived fields and documentation: **CC BY 4.0**.\n"
         "- Underlying official texts belong to their issuing governments; they are redistributed here for research "
         "and analysis, with source URLs, and remain subject to the issuers' terms.\n"
         "- Media texts (state media, private media, commentary) are **not redistributed**: the release carries "
-        "metadata, word counts and text hashes only.\n"
+        "metadata, word counts and text hashes only. The same applies to official-outlet sources that publish "
+        "journalism: " + "; ".join(f"`{k}` ({v})" for k, v in N.METADATA_ONLY_SOURCES.items()) + " "
+        + N.FORWARDED_NOTE + "\n"
         "- Access on Zenodo is restricted: approved users may not redistribute the raw files.",
         "## Contact", f"{N.AUTHOR} ({N.AFFILIATION}), ORCID {N.ORCID}.",
     ]
@@ -183,14 +194,16 @@ def render_codebook(ctx: Dict[str, Any]) -> str:
         "any of id, country, source, lang, date, url, text is missing or empty; the id is not prefixed by "
         "`<source>:`; source or country disagree with the file path; outlet is not one of official / state_media "
         "/ media / commentary; date is not a valid ISO calendar date between 1990 and 2100; lang is not a 2-3 "
-        "letter code; url is not http(s); org/title/speaker/kind/via are not strings; or `fetched` is malformed. "
+        "letter code; url is not http(s); org/title/speaker/kind/via are not strings; `fetched` is malformed; or "
+        "the publication date is more than one day after the snapshot cut-off. "
         "Duplicate ids keep the first row read. Rows fetched after the snapshot cut-off are excluded.",
     ]
     if ctx["semantic"].get("included"):
         parts += ["## semantic/doc_scores.parquet",
                   "`id` joins to the data files. Tone dimensions are probabilities 0-1 averaged over scored "
                   "sentences; `topic` ids are specific to `topic_v`; `targets` = entities mentioned other than the "
-                  "speaker's own country."]
+                  "speaker's own country. `validation_status` = `not_human_validated` on every row: the tone "
+                  "classifiers have been checked against their NLI teacher only, not against human coders."]
     return "\n\n".join(parts) + "\n"
 
 
@@ -222,10 +235,13 @@ def zenodo_metadata(ctx: Dict[str, Any]) -> Dict[str, Any]:
         f"<p>Version {ctx['version']}: snapshot up to {ctx['snapshot']['effective']} (UTC). "
         f"{_fmt(ctx['totals']['official'])} official documents with full text (Parquet and gzip JSON Lines) and "
         f"{_fmt(ctx['totals']['media'])} state-media and media items as metadata only (no body text).</p>",
-        html_table(["Country", "Official docs", "Media items", "First", "Last"], country_summary(ctx)),
+        html_table(["Country", "Full-text docs", "Metadata-only items", "First", "Last"], country_summary(ctx)),
         "<p>Collection respected robots.txt and rate limits and did not circumvent blocks; archived copies come "
         "from the Internet Archive Wayback Machine and are flagged per document. Coverage is uneven: counts "
         "reflect collection, not total output. See README.md and CODEBOOK.md in the files.</p>",
+        ("<p>Per-document tone scores (semantic/doc_scores.parquet) are model outputs that have NOT yet been "
+         "validated against expert human coding; only teacher-student agreement has been measured.</p>"
+         if ctx["semantic"].get("included") else ""),
         "<p>License: curation and metadata CC BY 4.0. Official texts belong to their issuing governments and are "
         "redistributed for research. Media texts are not redistributed.</p>",
     ])
@@ -247,7 +263,11 @@ def zenodo_metadata(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "keywords": ["political rhetoric", "official statements", "state media", "foreign ministry",
                      "multilingual corpus", "text as data", "international relations", "public diplomacy",
                      "propaganda", "strategic communication"] + [N.COUNTRY_NAMES.get(c, c) for c in countries],
-        "notes": ("Draft metadata generated by scripts/export_dataset.py; not yet submitted. DOI placeholder in "
-                  "README to be replaced after reservation. Corpus commit " + ctx["git"]["commit"][:12] + "."),
+        "notes": ("Draft metadata generated by scripts/export_dataset.py; not yet submitted. "
+                  + (f"Reserved DOI {ctx['doi']}. " if ctx.get("doi") else
+                     "DOI placeholder in README to be replaced after reservation. ")
+                  + "Corpus commit " + ctx["git"]["commit"][:12] + "."),
         "prereserve_doi": True,
+        "related_identifiers": [{"identifier": N.REPO_URL, "relation": "isSupplementedBy",
+                                 "resource_type": "software"}],
     }}

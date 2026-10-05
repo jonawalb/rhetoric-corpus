@@ -1,6 +1,7 @@
 """Tests for the dataset release export (scripts/export_dataset.py and its release_* modules)."""
 from __future__ import annotations
 
+import csv
 import gzip
 import hashlib
 import json
@@ -107,6 +108,42 @@ def test_release_layout_and_rows(corpus):
     assert next(i for i in m["inputs"] if i["path"].endswith("mid_ru.jsonl"))["partial_tail_bytes"] > 0
 
 
+def test_drops_publication_dates_after_snapshot(corpus):
+    write(corpus / "docs", "IR", "ir_x", [doc("ir_x", 1, country="IR", outlet="state_media", lang="fa"),
+                                          doc("ir_x", 2, country="IR", outlet="state_media", lang="fa",
+                                              date="2026-12-13")])
+    m = run(corpus)
+    assert m["validation"]["dropped"]["date_after_snapshot"] == 1
+    ids = pq.read_table(corpus / "release" / "0.1.0" / "media" / "IR.parquet").column("id").to_pylist()
+    assert ids == ["ir_x:1"]
+
+
+def test_official_journalism_and_forwards_are_metadata_only(corpus):
+    write(corpus / "docs", "RU", "rg_ru", [doc("rg_ru", 1, kind="article")])
+    write(corpus / "docs", "RU", "telegram_ru", [doc("telegram_ru", 1, channel="MID_Russia"),
+                                                 doc("telegram_ru", 2, channel="MID_Russia", forwarded=True)])
+    run(corpus)
+    out = corpus / "release" / "0.1.0"
+    official = set(pq.read_table(out / "official" / "RU.parquet").column("id").to_pylist())
+    media = pq.read_table(out / "media" / "RU.parquet")
+    assert "telegram_ru:1" in official and not official & {"rg_ru:1", "telegram_ru:2"}
+    assert {"rg_ru:1", "telegram_ru:2"} <= set(media.column("id").to_pylist()) and "text" not in media.column_names
+    readme = (out / "README.md").read_text(encoding="utf-8")
+    assert "`rg_ru`" in readme
+    # country table counts released full texts, not the corpus outlet class
+    assert "| RU | 3 | 4 |" in readme
+    cov = {(r["source"], r["release"]): int(r["n"]) for r in csv.DictReader((out / "coverage.csv").open())}
+    assert cov[("rg_ru", "metadata_only")] == 1 and cov[("telegram_ru", "full_text")] == 1
+
+
+def test_reserved_doi_is_cited(corpus):
+    m = run(corpus, "--doi", "10.5281/zenodo.123")
+    out = corpus / "release" / "0.1.0"
+    readme = (out / "README.md").read_text(encoding="utf-8")
+    assert "https://doi.org/10.5281/zenodo.123" in readme and "XXXXXXX" not in readme
+    assert m["doi"] == "10.5281/zenodo.123"
+
+
 def test_docs_manifest_and_checksums(corpus):
     run(corpus)
     out = corpus / "release" / "0.1.0"
@@ -191,6 +228,25 @@ def test_semantic_included_when_scored(corpus):
     rows = pq.read_table(corpus / "release" / "0.1.0" / "semantic" / "doc_scores.parquet").to_pylist()
     assert rows[0]["id"] == "mid_ru:1" and rows[0]["topic_label"] == "sanctions"
     assert rows[0]["targets"] == ["NATO", "US"] and abs(rows[0]["hostility"] - 0.9) < 1e-6
+    assert rows[0]["validation_status"] == "not_human_validated"
+    out = corpus / "release" / "0.1.0"
+    meta = pq.read_schema(out / "semantic" / "doc_scores.parquet").metadata
+    assert meta[b"validation_status"] == b"not_human_validated"
+    assert "not yet human-validated" in (out / "README.md").read_text(encoding="utf-8")
+    zen = json.loads((out / "ZENODO_METADATA.json").read_text(encoding="utf-8"))["metadata"]
+    assert "NOT yet been validated" in zen["description"]
+
+
+def test_coverage_csv_and_repo_link(corpus):
+    run(corpus)
+    out = corpus / "release" / "0.1.0"
+    rows = list(csv.DictReader((out / "coverage.csv").open(encoding="utf-8")))
+    assert {r["source"] for r in rows} >= {"mid_ru", "ria_ru", "mfa_cn"}
+    assert sum(int(r["n"]) for r in rows) == sum(c["n"] for c in json.loads(
+        (out / "MANIFEST.json").read_text(encoding="utf-8"))["coverage"])
+    assert "coverage.csv" in (out / "SHA256SUMS").read_text(encoding="utf-8")
+    zen = json.loads((out / "ZENODO_METADATA.json").read_text(encoding="utf-8"))["metadata"]
+    assert zen["related_identifiers"][0]["identifier"].startswith("https://github.com/")
 
 
 def test_check_row_reasons():
