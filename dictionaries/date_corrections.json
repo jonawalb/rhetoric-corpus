@@ -1,0 +1,11 @@
+{
+  "_doc": "Date fixes for documents already sealed into immutable store parts (parts are never rewritten). scripts/build_index.py applies them when indexing and updates already-indexed rows on every incremental build. A date string replaces the stored date; null keeps the document out of the index (true date unverifiable). Every entry has a note.",
+  "corrections": {
+    "cn_chinadaily:WS6a09b808a310d6866eb490be": "2026-05-17",
+    "ir_basijnews_fa:9788052": null
+  },
+  "notes": {
+    "cn_chinadaily:WS6a09b808a310d6866eb490be": "Stored 2569-05-17: the page's publishdate meta and 'Updated:' line carry a Thai Buddhist Era year (+543). URL /a/202605/17/ and the corrected year agree: 2026-05-17. Verified 2026-10-04.",
+    "ir_basijnews_fa:9788052": "Stored 2026-12-13 (future). basijnews.ir itself serves article:published_time 2026-12-13T10:22:15+03:30, JSON-LD datePublished 2026-12-13 and visible date 1405/09/22 (= 2026-12-13), with modified_time 2026-09-30T10:24:42+03:30 and no date in the URL. The true publication date cannot be verified from the page (no Wayback capture), so the document is excluded rather than guessed. Checked 2026-10-04."
+  }
+}

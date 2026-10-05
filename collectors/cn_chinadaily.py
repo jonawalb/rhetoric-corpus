@@ -18,6 +18,7 @@ Run per language (separate processes, separate state):
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import re
 import sys
 import time
@@ -74,6 +75,23 @@ def parse(html: str, lang: str) -> Optional[Dict]:
             "multipage": bool(re.search(r'href="[^"]*WS[0-9a-f]{24}_2\.html"', html))}
 
 
+URL_DATE_TOLERANCE = dt.timedelta(days=3)
+
+
+def pick_date(parsed: Optional[str], from_url: Optional[str], today: Optional[dt.date] = None) -> Optional[str]:
+    """The page's date, unless the URL's /a/YYYYMM/DD/ date exists and the page date is missing, in the future, or
+    more than 3 days away from it (pages have carried Buddhist Era years: publishdate 2569-05-17 for 2026-05-17)."""
+    if not from_url:
+        return parsed
+    if not parsed:
+        return from_url
+    today = today or dt.datetime.now(dt.timezone.utc).date()
+    p, u = dt.date.fromisoformat(parsed), dt.date.fromisoformat(from_url)
+    if p > today + dt.timedelta(days=1) or abs(p - u) > URL_DATE_TOLERANCE:
+        return from_url
+    return parsed
+
+
 class CD:
     def __init__(self, lang: str) -> None:
         self.lang = lang
@@ -117,7 +135,7 @@ class CD:
         if not p or len(p["text"]) < 100:
             return
         m = re.search(r"/a/(\d{4})(\d{2})/(\d{2})/", url)
-        date = p["date"] or (cc.ymd(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None)
+        date = pick_date(p["date"], cc.ymd(int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None)
         if not date:
             return
         kind = "article"

@@ -43,7 +43,7 @@ import time
 import urllib.parse
 import urllib.request
 import urllib.robotparser
-from datetime import datetime, timezone
+from datetime import date as _date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Union
 
@@ -458,6 +458,64 @@ def validate(row: Dict) -> Dict:
     return out
 
 
+# ---------------------------------------------------------------------------------------------- date guard
+# A few sites print impossible dates (China Daily 2569-05-17 = Thai Buddhist Era, +543 years; Basij News an
+# article:published_time months ahead). Every writer (write_docs, ru_common.write_docs_fast, cn_common.Sink) runs
+# guard_date(): a date more than FUTURE_SLACK_DAYS ahead is replaced by a date in the URL, else by date - 543 years
+# when that is plausible, else the document is dropped with a WARNING (the schema requires a date).
+FUTURE_SLACK_DAYS = 2
+BUDDHIST_ERA_OFFSET = 543
+_URL_DATES = (re.compile(r"/((?:19|20)\d\d)/(\d{1,2})/(\d{1,2})(?!\d)"),         # /2026/05/17/
+              re.compile(r"/((?:19|20)\d\d)(\d\d)/(\d\d)(?=/|$)"),             # /202605/17/
+              re.compile(r"(?<!\d)((?:19|20)\d\d)-(\d\d)-(\d\d)(?!\d)"),       # 2026-05-17
+              re.compile(r"(?<!\d)((?:19|20)\d\d)(\d\d)(\d\d)(?!\d)"))         # 20260517
+
+
+def _iso(y, m, d) -> Optional[str]:
+    try:
+        return _date(int(y), int(m), int(d)).isoformat()
+    except ValueError:
+        return None
+
+
+def url_date(url: str, latest: Optional[str] = None) -> Optional[str]:
+    """First valid date in the path/query of `url` (not later than `latest`, if given), else None."""
+    p = urllib.parse.urlsplit(url or "")
+    tail = p.path + ("?" + p.query if p.query else "")
+    for rx in _URL_DATES:
+        for m in rx.finditer(tail):
+            d = _iso(*m.groups())
+            if d and (latest is None or d <= latest):
+                return d
+    return None
+
+
+def guard_date(row: Dict, today: Optional[_date] = None) -> Optional[Dict]:
+    """`row` unchanged when its date is at most FUTURE_SLACK_DAYS ahead (UTC); otherwise a copy with the URL's
+    date or the date minus 543 years (Buddhist Era), or None (drop) when neither gives a plausible date."""
+    today = today or datetime.now(timezone.utc).date()
+    latest = (today + timedelta(days=FUTURE_SLACK_DAYS)).isoformat()
+    d = row.get("date")
+    if not d or d <= latest:
+        return row
+    fixed, how = url_date(row.get("url") or "", latest), "url"
+    if not fixed and int(d[:4]) - BUDDHIST_ERA_OFFSET >= 1900:
+        be = _iso(int(d[:4]) - BUDDHIST_ERA_OFFSET, d[5:7], d[8:10])
+        fixed, how = (be, "buddhist-era") if be and be <= latest else (None, how)
+    if fixed:
+        logger.warning("future date %s -> %s (%s): %s %s %s", d, fixed, how, row.get("source"), row.get("id"),
+                       row.get("url"))
+        return {**row, "date": fixed}
+    logger.warning("future date %s, no fix found; document dropped: %s %s %s", d, row.get("source"), row.get("id"),
+                   row.get("url"))
+    return None
+
+
+def guard_dates(rows: Iterable[Dict]) -> List[Dict]:
+    """guard_date over rows, dropping the ones it rejects."""
+    return [g for g in (guard_date(r) for r in rows) if g is not None]
+
+
 def write_docs(country: str, source: str, rows: Iterable[Dict], replace: bool = False) -> tuple:
     """Append documents to docs/<COUNTRY>/<source>.jsonl, skipping ids already present (in the file or sealed into
     the store, see sealed_ids).
@@ -466,7 +524,7 @@ def write_docs(country: str, source: str, rows: Iterable[Dict], replace: bool = 
     Returns (added, total). Safe against concurrent writers via an flock on the file."""
     path = docs_path(country, source)
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [validate(r) for r in rows]
+    rows = guard_dates(validate(r) for r in rows)
     for r in rows:
         if r["source"] != source or r["country"] != country.upper():
             raise ValueError(f"{r['id']}: country/source must match the file ({country}/{source})")
@@ -552,5 +610,5 @@ def setup_logging(name: str, level: int = logging.INFO) -> logging.Logger:
 
 __all__ = ["ROOT", "DOCS", "RAW", "STATE", "UA", "HOST_DELAY", "robots_allowed", "crawl_delay", "wayback_latest",
            "fetch", "fetch_meta", "clean_html", "make_id", "docs_path", "read_docs", "existing_ids", "ids_path",
-           "sealed_ids", "validate",
+           "sealed_ids", "validate", "url_date", "guard_date", "guard_dates",
            "write_docs", "State", "setup_logging", "now_iso"]

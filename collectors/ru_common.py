@@ -298,7 +298,7 @@ def write_docs_fast(country: str, source: str, rows: Iterable[Dict]) -> tuple:
     import json
     path = lib.docs_path(country, source)
     path.parent.mkdir(parents=True, exist_ok=True)
-    rows = [lib.validate(r) for r in rows]
+    rows = lib.guard_dates(lib.validate(r) for r in rows)
     for r in rows:
         if r["source"] != source or r["country"] != country.upper():
             raise ValueError(f"{r['id']}: country/source must match the file ({country}/{source})")

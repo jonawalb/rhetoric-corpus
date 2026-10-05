@@ -302,22 +302,37 @@ def _ctext(fragment: Optional[str]) -> str:
     return lib.clean_html(re.sub(r"\s+", " ", fragment or ""))
 
 
-def parse_date(raw: Optional[str], fallback_text: str, lang: str) -> Optional[str]:
+def _tehran_today() -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=3, minutes=30)).date().isoformat()
+
+
+def parse_date(raw: Optional[str], fallback_text: str, lang: str, today: Optional[str] = None) -> Optional[str]:
+    """First date found in `raw` (ISO or Jalali), then in `fallback_text` (Jalali, or '5 May 2024'). A candidate
+    later than today (Tehran) + 1 day is skipped (basijnews.ir has served article:published_time and a visible
+    date of 2026-12-13 / 1405/09/22 for an article modified 2026-09-30)."""
+    limit = (datetime.fromisoformat(today or _tehran_today()) + timedelta(days=1)).date().isoformat()
+
+    def ok(d: Optional[str]) -> Optional[str]:
+        return d if d and d <= limit else None
+
     if raw:
         r = to_ascii_digits(raw)
         if re.match(r"(19|20)\d\d-\d\d-\d\d", r):
-            return tehran_date(r)
-        d = jalali_str_to_iso(fa_norm(raw))
+            d = ok(tehran_date(r))
+        else:
+            d = ok(jalali_str_to_iso(fa_norm(raw)))
         if d:
             return d
     if fallback_text:
         t = fa_norm(fallback_text).replace("/", " ")
-        d = jalali_str_to_iso(t)
+        d = ok(jalali_str_to_iso(t))
         if d:
             return d
         m = re.search(r"(\d{1,2})\s+([A-Za-z]+)\s+((?:19|20)\d\d)", t)
         if m and m.group(2).lower() in MONTHS_EN:
-            return f"{m.group(3)}-{MONTHS_EN[m.group(2).lower()]:02d}-{int(m.group(1)):02d}"
+            d = ok(f"{m.group(3)}-{MONTHS_EN[m.group(2).lower()]:02d}-{int(m.group(1)):02d}")
+            if d:
+                return d
     return None
 
 

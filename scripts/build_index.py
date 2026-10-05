@@ -18,6 +18,10 @@ them from the file, so they keep their rows and rowids. Documents also keep the 
 (filled in later for an existing row when a part repeats it), so publish/semantic steps need no JSONL files.
 --rebuild starts from scratch (it needs every part locally: store_sync.py pull --only docs-parts).
 
+Date corrections: dictionaries/date_corrections.json {"corrections": {doc id: "YYYY-MM-DD" | null}} fixes dates of
+documents in immutable parts. Applied when a document is indexed, and to already-indexed rows on every run; null
+keeps the document out of the index.
+
 Usage: uv run python scripts/build_index.py [--rebuild] [--trigram-all]
 """
 from __future__ import annotations
@@ -39,6 +43,7 @@ from textnorm import CJK_LANGS, norm, sentences  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
 DB = ROOT / "index" / "corpus.sqlite"
+CORRECTIONS = ROOT / "dictionaries" / "date_corrections.json"
 META = ("id", "country", "source", "outlet", "org", "lang", "date", "url", "title", "speaker", "kind", "via")
 logger = logging.getLogger("build_index")
 
@@ -142,11 +147,35 @@ def _use_cjk(con: sqlite3.Connection, lang: Optional[str]) -> bool:
     return _TRIGRAM_ALL[key] or (lang in CJK_LANGS)
 
 
-def _insert_docs(con: sqlite3.Connection, rel: str, rows: Iterable[Dict]) -> Tuple[int, int]:
+def load_corrections(path: Path = CORRECTIONS) -> Dict[str, Optional[str]]:
+    """{doc id: corrected date, or None = exclude} from the date corrections file ({} when it is missing)."""
+    if not path.exists():
+        return {}
+    return dict(json.loads(path.read_text(encoding="utf-8")).get("corrections") or {})
+
+
+def apply_corrections(con: sqlite3.Connection, corr: Dict[str, Optional[str]]) -> int:
+    """Bring already-indexed rows in line with `corr`; returns the number of rows changed or removed."""
+    n = 0
+    for did, date in corr.items():
+        if date is None:
+            n += _delete_docs(con, "id=?", (did,))
+        else:
+            n += con.execute("UPDATE docs SET date=? WHERE id=? AND date IS NOT ?", (date, did, date)).rowcount
+    return n
+
+
+def _insert_docs(con: sqlite3.Connection, rel: str, rows: Iterable[Dict],
+                 corr: Optional[Dict[str, Optional[str]]] = None) -> Tuple[int, int]:
     added = dup = 0
+    corr = corr or {}
     for r in rows:
         if not r.get("id") or not r.get("text"):
             continue
+        if r["id"] in corr:
+            if corr[r["id"]] is None:
+                continue
+            r = {**r, "date": corr[r["id"]]}
         vals = [r.get(k) for k in META]
         sample, wayback = _extra(r, "sample"), _extra(r, "wayback")
         cur = con.execute(
@@ -182,18 +211,22 @@ def _delete_unsealed(con: sqlite3.Connection, rel: str, root: Path) -> int:
     return n
 
 
-def update(con: sqlite3.Connection, docs_dir: Path = DOCS, root: Optional[Path] = None) -> Dict[str, int]:
-    """root: checkout holding docs-parts/ and state/ids/ (default: the parent of docs_dir)."""
+def update(con: sqlite3.Connection, docs_dir: Path = DOCS, root: Optional[Path] = None,
+           corrections: Optional[Path] = None) -> Dict[str, int]:
+    """root: checkout holding docs-parts/ and state/ids/ (default: the parent of docs_dir); corrections: date
+    corrections file (default dictionaries/date_corrections.json)."""
     root = docs_dir.parent if root is None else root
     stats = {"files_skipped": 0, "files_appended": 0, "files_reindexed": 0, "files_removed": 0,
-             "docs_added": 0, "docs_removed": 0, "dup_ids": 0, "parts_indexed": 0, "parts_known": 0}
+             "docs_added": 0, "docs_removed": 0, "dup_ids": 0, "parts_indexed": 0, "parts_known": 0,
+             "dates_corrected": 0}
+    corr = load_corrections(corrections) if corrections is not None else load_corrections()
     known = {r[0]: r for r in con.execute("SELECT path, size, mtime, done, prefix_sha FROM files")}
     for path in segments.part_files(root):  # immutable: once in `files`, never read again
         rel = path.relative_to(root).as_posix()
         if rel in known:
             stats["parts_known"] += 1
             continue
-        added, dup = _insert_docs(con, rel, _iter_part(path))
+        added, dup = _insert_docs(con, rel, _iter_part(path), corr)
         st = path.stat()
         con.execute("INSERT OR REPLACE INTO files(path, size, mtime, done, prefix_sha, ndocs) VALUES(?,?,?,?,?,?)",
                     (rel, st.st_size, st.st_mtime, st.st_size, _prefix_sha(path, st.st_size), added))
@@ -220,7 +253,7 @@ def update(con: sqlite3.Connection, docs_dir: Path = DOCS, root: Optional[Path] 
                 stats["docs_removed"] += _delete_unsealed(con, rel, root)
             stats["files_reindexed"] += 1
         rows, done = _iter_lines(path, start)
-        added, dup = _insert_docs(con, rel, rows)
+        added, dup = _insert_docs(con, rel, rows, corr)
         stats["docs_added"] += added
         stats["dup_ids"] += dup
         ndocs = con.execute("SELECT count(*) FROM docs WHERE file=?", (rel,)).fetchone()[0]
@@ -234,6 +267,7 @@ def update(con: sqlite3.Connection, docs_dir: Path = DOCS, root: Optional[Path] 
         stats["docs_removed"] += _delete_unsealed(con, rel, root)
         con.execute("DELETE FROM files WHERE path=?", (rel,))
         stats["files_removed"] += 1
+    stats["dates_corrected"] = apply_corrections(con, corr)
     con.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('built', datetime('now'))")
     con.commit()
     return stats

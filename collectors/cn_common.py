@@ -200,9 +200,14 @@ class Sink:
     def add(self, row: Dict) -> bool:
         row.setdefault("country", COUNTRY)
         row.setdefault("source", self.source)
-        if row["id"] in self.ids:
+        row_id = row["id"]
+        if row_id in self.ids:
             return False
         lib.validate(row)  # raise early, before buffering
+        row = lib.guard_date(row)  # write_docs guards again; this keeps a dropped doc out of the buffer
+        if row is None:
+            self.ids.add(row_id)  # do not refetch it in this run
+            return False
         self.ids.add(row["id"])
         self.buf.append(row)
         if len(self.buf) >= self.flush_every:
