@@ -459,3 +459,14 @@ def test_repair_seals_stray_docs_and_restores_layout(root, hub):
     lib.write_docs("ZZ", "zz_t", [row(5), row(6), row(8)])                   # the local buffer: only zz_t:8 is new
     assert store_sync.seal("me/store")["lines"] == 1
     assert sorted(stored_ids(hub.d / "docs-parts")) == [f"zz_t:{i}" for i in (0, 1, 2, 5, 6, 8)]
+
+
+def test_repair_finds_unlisted_stray_docs_in_the_tree(root, hub):
+    """A layout-1 push that uploaded docs files and then refused its manifest leaves them unlisted."""
+    _migrated_store(root, hub)
+    (hub.d / "docs" / "ZZ").mkdir(parents=True, exist_ok=True)
+    (hub.d / "docs" / "ZZ" / "zz_t.jsonl").write_text(json.dumps(row(2)) + "\n" + json.dumps(row(9)) + "\n")
+    rep = store_sync.repair("me/store", force=True)
+    assert rep["stray_files"] == 1 and rep["new"] == 1 and rep["already_sealed"] == 1
+    assert not (hub.d / "docs" / "ZZ" / "zz_t.jsonl").exists()
+    assert sorted(stored_ids(hub.d / "docs-parts")) == [f"zz_t:{i}" for i in (0, 1, 2, 9)]

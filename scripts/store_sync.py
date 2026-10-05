@@ -659,6 +659,15 @@ def repair(repo: str, force: bool = False) -> dict:
             raise SystemExit(f"{repo} was never migrated (no {PARTS}legacy/ parts); nothing to repair")
         logger.warning("%s: layout key lost; restoring layout 2", repo)
         _raise_layout(2)
+    stray_tree = {}
+    try:  # also files uploaded by a push that then refused to write its manifest (not listed in it)
+        for f in hf.list_repo_tree(repo, path_in_repo="docs", recursive=True, repo_type="dataset"):
+            if getattr(f, "size", None) is not None and f.path.endswith(".jsonl") and f.path not in remote:
+                lfs = getattr(f, "lfs", None)
+                stray_tree[f.path] = {"sha256": getattr(lfs, "sha256", None) if lfs else None, "bytes": f.size}
+    except Exception as e:  # noqa: BLE001 - no docs/ folder
+        logger.info("no docs/ in the store tree (%s)", type(e).__name__)
+    remote = {**stray_tree, **remote}
     stray = sorted(p for p in remote if p.startswith("docs/") and p.endswith(".jsonl"))
     work = ROOT / "staging" / "repair"
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -713,11 +722,11 @@ def repair(repo: str, force: bool = False) -> dict:
         _raise_layout(2)
         fresh = remote_manifest(hf, repo, allow_downgraded=True)
         late = [p for p in fresh if p.startswith("docs/") and p.endswith(".jsonl") and p not in stray]
-        if late or any(fresh[p]["sha256"] != remote[p]["sha256"] for p in stray if p in fresh):
+        if late or any(fresh[p]["sha256"] != remote[p]["sha256"] for p in stray if p in fresh and p not in stray_tree):
             raise SystemExit(f"stray docs changed during the repair ({late[:5]}); part kept, nothing deleted; re-run")
         files = {p: v for p, v in fresh.items() if p not in stray}
         files.update(entry)
-        ops = [CommitOperationDelete(p) for p in stray if p in fresh]
+        ops = [CommitOperationDelete(p) for p in stray if p in fresh or p in stray_tree]
         ops += [CommitOperationAdd("README.md", CARD.encode()), *_manifest_ops(files, layout=2)]
         hf.create_commit(repo, repo_type="dataset", commit_message=f"store: repair layout 2, seal {len(stray)} stray docs files",
                          operations=ops)
