@@ -2,6 +2,7 @@
 # Restart every collector after a reboot. Each is resumable (skips what it already has); any already
 # running is left alone. Logs go to logs/<name>.log.
 cd "${0:A:h}/.."
+export PATH="$HOME/.local/bin:$PATH"  # uv lives here; nohup in a non-login shell does not find it otherwise
 run() {  # run <log-name> <collector args...>
   local name=$1; shift
   if pgrep -f "collectors/$*" >/dev/null; then echo "running: $*"; return; fi
