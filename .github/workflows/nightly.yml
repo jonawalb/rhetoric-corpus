@@ -57,6 +57,11 @@ jobs:
                       /opt/microsoft /opt/google /usr/lib/jvm || true
           sudo docker image prune -af >/dev/null 2>&1 || true
           df -h / | tail -1
+          # 16 GB RAM runners: the 1.8M-document site build died mid-upload on 2026-10-06 (runner lost, exit 143).
+          # Swap on the spare disk keeps a memory peak from killing the runner.
+          sudo swapoff -a || true
+          sudo fallocate -l 16G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 >/dev/null && sudo swapon /swapfile2
+          free -g | head -3
 
       - uses: actions/checkout@v4
 
@@ -143,7 +148,10 @@ jobs:
         if: always() && steps.trends.outcome == 'success' && (github.event_name == 'schedule' || inputs.publish)
         continue-on-error: true
         timeout-minutes: 90
-        run: uv run --no-sync python publish/build_hf_data.py --trends staging/trends --upload 2>&1 | tail -15
+        run: |
+          free -g | head -3
+          /usr/bin/time -v uv run --no-sync python publish/build_hf_data.py --trends staging/trends --upload 2>&1 \
+            | grep -vE '^\s+(Average|Socket|Signals|Swaps|File system|Involuntary|Voluntary|Page size|Minor|Exit status)' | tail -40
 
       - name: Push store (always, so collected documents are never lost)
         id: push
