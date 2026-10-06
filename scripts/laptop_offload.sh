@@ -11,6 +11,7 @@
 #     new version of each changed file (layout 1: whole docs files), and old versions count against the 100 GB quota.
 # Usage: scripts/laptop_offload.sh [--once]      (default: loop every 3 hours)
 cd "${0:A:h}/.."
+export PATH="$HOME/.local/bin:$PATH"  # uv; a nohup'd or relaunched loop otherwise cannot find it
 REPO=${RHETORIC_STORE_REPO:-wallabee1/rhetoric-corpus-store}
 export HF_HUB_DISABLE_PROGRESS_BARS=1
 KEEP_RAW=(by_president ir_presstv kp_rodong_en ir_khamenei_en)   # = store_sync.RAW_DIRS (synced by the nightly job)
