@@ -121,11 +121,13 @@ def sync_docs(con: sqlite3.Connection) -> Dict[str, int]:
     cc = corpus()
     rows = cc.execute("SELECT rowid, id, file, country, source, outlet, org, lang, date, kind, url, title FROM docs").fetchall()
     cc.close()
-    known = {r[0]: (r[1], r[2]) for r in con.execute("SELECT doc_id, crow, present FROM docs")}
+    known = {r[0]: (r[1], r[2], r[3], r[4]) for r in con.execute("SELECT doc_id, crow, present, source, outlet FROM docs")}
     new = [r for r in rows if r[1] not in known]
     moved = [(r[0], r[1]) for r in rows if r[1] in known and (known[r[1]][0] != r[0] or not known[r[1]][1])]
+    # The corpus index can reclassify a document (build_index.py Telegram policy): follow its source and outlet.
+    relabelled = [(r[4], r[5], r[1]) for r in rows if r[1] in known and known[r[1]][2:] != (r[4], r[5])]
     present = {r[1] for r in rows}
-    gone = [d for d, (_, pr) in known.items() if pr and d not in present]
+    gone = [d for d, (_, pr, *_x) in known.items() if pr and d not in present]
     samples = _samples_for({r[2] for r in new}, {r[1] for r in new}) if new else {}
     con.executemany(
         "INSERT INTO docs(crow, doc_id, file, country, source, outlet, org, lang, date, kind, url, title, sample)"
@@ -133,8 +135,10 @@ def sync_docs(con: sqlite3.Connection) -> Dict[str, int]:
     # A re-indexed file may also have changed its sentence split: re-run targets for moved docs.
     con.executemany("UPDATE docs SET crow=?, present=1, targets_v=NULL WHERE doc_id=?", moved)
     con.executemany("UPDATE docs SET present=0 WHERE doc_id=?", [(d,) for d in gone])
+    con.executemany("UPDATE docs SET source=?, outlet=? WHERE doc_id=?", relabelled)
     con.commit()
-    stats = {"corpus_docs": len(rows), "new": len(new), "moved": len(moved), "gone": len(gone)}
+    stats = {"corpus_docs": len(rows), "new": len(new), "moved": len(moved), "gone": len(gone),
+             "relabelled": len(relabelled)}
     logger.info("sync: %s", stats)
     return stats
 

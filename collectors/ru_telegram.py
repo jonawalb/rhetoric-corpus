@@ -9,10 +9,12 @@ page every 30 min and walks down to the newest post it already has.
 WAYBACK mode (--wayback, the original 2026-10-02 method, kept for reference): archived copies of t.me/s/<channel>/<N>
 picked from the CDX index (see captures()).
 
-Channels (handles verified 2026-10-03):
+Channels (handles verified 2026-10-03; official status re-checked 2026-10-07, evidence in SOURCES.md):
   official  -> docs/RU/telegram_ru.jsonl        Zakharova, Medvedev, MFA (MID_Russia), MoD (mod_russia),
-                                                 Government (government_rus), Federation Council (council_gov_ru),
-                                                 Duma chairman Volodin (vv_volodin)
+                                                 Government (government_rus), Duma chairman Volodin (vv_volodin)
+  not verified -> docs/RU/telegram_ru.jsonl     council_gov_ru (titled "Federation Council", but council.gov.ru links
+                                                 @sovfedofficial instead; it only forwards committee channels): outlet media
+  scripts/build_index.py indexes forwards and unverified channels as source telegram_unofficial_ru, outlet media.
   state media -> docs/RU/telegram_media_ru.jsonl RIA Novosti (rian_ru), TASS (tass_agency) -- run after the official ones
 One row per post with text (>= 20 chars; photo-only posts skipped); `forwarded` = True when the post is a forward.
 ALL TOPICS, no filter.
@@ -41,7 +43,7 @@ CHANNELS: Dict[str, Tuple[Optional[str], str, str, str]] = {
     "MID_Russia": (None, "MFA", "telegram_ru", "official"),
     "mod_russia": (None, "MoD", "telegram_ru", "official"),
     "government_rus": (None, "Government", "telegram_ru", "official"),
-    "council_gov_ru": (None, "Federation Council", "telegram_ru", "official"),
+    "council_gov_ru": (None, "Federation Council", "telegram_ru", "media"),  # not verified official (2026-10-07)
     "vv_volodin": ("Volodin", "State Duma", "telegram_ru", "official"),
     "rian_ru": (None, "RIA Novosti", "telegram_media_ru", "state_media"),
     "tass_agency": (None, "TASS", "telegram_media_ru", "state_media"),

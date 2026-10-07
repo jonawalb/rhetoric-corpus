@@ -94,7 +94,7 @@ appended bytes). collectors/lib.py was not changed.
 | mid_ru / mid_en | + sections /ru/foreign_policy/news/ and /en/foreign_policy/news/ (all MFA news; ~25k RU URLs in the CDX index), `--start earliest`; new pages no longer cached in raw/mid (disk); 404s no longer retried forever | what the new mid.ru serves (pre-Aug-2021 old-portal URLs remain uncollectable: robots-disallowed `asset_publisher`) | listing pagination still robots-forbidden (`/*?PAGEN`), so discovery = page 1 + Wayback CDX URL index + link-following. |
 | mil_ru | `--start earliest` (2010): adds the 2010-2020 Wayback CDX captures after the 2021-2025 queue | 2010 → early 2025 (Wayback only) | mil.ru still unreachable (timeouts); new mil.ru (2025→) still uncovered. MoD's own Telegram channel (below) now covers 2016 → now live. |
 | tass_ru (backfill) | `--start earliest` (2014): CDX half-years 2014-2020 added for politika / mezhdunarodnaya-panorama / armiya-i-opk | 2014 → now (Wayback only) | tass.ru still 403s (bot wall, not evaded). Shares the global Wayback rate (one request per ~4-5 s across ALL collectors/agents). |
-| telegram_ru (LIVE now) | t.me answers again (2026-10-03) and has no robots.txt (404 = no rules): live walk of the public preview t.me/s/<channel>?before=N, newest → post 1, then follow every 30 min. Channels: MariaVladimirovnaZakharova, medvedev_telegram, MID_Russia (~93k posts), mod_russia (MoD, ~68k, from 2016-12), government_rus (~33k), council_gov_ru (~10k), vv_volodin (~1.8k). `forwarded` flag per post. | each channel's first post | ~20 posts per page at 4 s; the Wayback mode is kept as `--wayback`. |
+| telegram_ru (LIVE now) | t.me answers again (2026-10-03) and has no robots.txt (404 = no rules): live walk of the public preview t.me/s/<channel>?before=N, newest → post 1, then follow every 30 min. Channels: MariaVladimirovnaZakharova, medvedev_telegram, MID_Russia (~93k posts), mod_russia (MoD, ~68k, from 2016-12), government_rus (~33k), council_gov_ru (~10k, not verified official: see "Telegram channels: official status"), vv_volodin (~1.8k). `forwarded` flag per post; forwards are indexed as telegram_unofficial_ru. | each channel's first post | ~20 posts per page at 4 s; the Wayback mode is kept as `--wayback`. |
 | telegram_media_ru (NEW) | same live walk for the state-media channels rian_ru (~347k posts) and tass_agency (~399k), run after the official channels | channel start | short teletype posts (headline + lead); outlet state_media. |
 | rg_ru (NEW) | Rossiyskaya Gazeta (official government newspaper; also rg.ru/documents/ = official texts of laws/decrees), collectors/ru_sitemap_media.py: daily sitemaps from https://rg.ru/sitemaps/index.xml, read in "spread" order (bit-reversed day index → a partial run covers 2003-2026 evenly); JSON-LD articleBody | 2003-07 (8,474 daily sitemaps, ~200-400 URLs/day, ~2M URLs) | outlet official; robots disallows /oficial/, /arhiv/, /printable/ etc. (honoured). |
 | vesti_ru (NEW) | Vesti.ru (VGTRK, federal state broadcaster), 48 sitemap chunks of /article/<id> (~2.4M URLs), spread order | 2000s → now | outlet state_media. |
@@ -112,6 +112,26 @@ Tried and NOT built / blocked (2026-10-03):
 - interfax.ru: reachable, 23 sitemaps (~1.1M URLs), but a private agency (not official/state media); not built.
 - svr.gov.ru: reachable over http; not built (small).
 - government.ru over https, mil.ru, function.mil.ru, tass.ru: unreachable / 403 as before (no evasion).
+
+### Telegram channels: official status (re-checked 2026-10-07, approved by Jonathan)
+
+Only a channel verified as the official account of a ministry, body or serving official counts as `official`, and only
+its own posts. A forward's origin channel is not recorded, so forwards are not attributable and are not official.
+scripts/build_index.py applies this (TG_VERIFIED): forwards and unverified channels are indexed as source
+`telegram_unofficial_ru`, outlet `media` (headline + link only on the site); dictionaries/telegram_forwarded_ids.txt
+lists the forwards indexed before the rule (from the stored parts, 2026-10-07). t.me and the .ru sites do not answer
+from the laptop, so the evidence is Wayback copies. "Badge" = Telegram's verified-account badge in the channel header.
+
+| Channel | Status | Evidence |
+|---|---|---|
+| MID_Russia | official (MFA) | mid.ru/ru/ header and footer link t.me/MID_Russia (web.archive.org/web/20250118035344/https://mid.ru/ru/; also /ru/press_service/spokesman/ 20240809071908); badge (t.me/s/MID_Russia 20261005090354) |
+| mod_russia | official (MoD) | function.mil.ru links t.me/mod_russia (Wayback 20250430024356); badge (t.me/s/mod_russia 20261005104203) |
+| government_rus | official (Government) | government.ru footer links t.me/government_rus (Wayback 20240602003704; by 2025-12 the site links max.ru/government_rus instead) |
+| MariaVladimirovnaZakharova | official (MFA spokeswoman, personal channel) | badge, title "Мария Захарова" (t.me/s/ 20261004225703); mid.ru does not link it |
+| medvedev_telegram | official (Security Council deputy chairman, personal channel) | badge, title "Дмитрий Медведев" (t.me/s/ 20261005094330); no government-site link found |
+| vv_volodin | official (State Duma chairman, personal channel) | badge, title "Вячеслав Володин" (t.me/s/ 20261004101657); duma.gov.ru links only t.me/duma_gov_ru |
+| council_gov_ru | NOT verified -> unofficial | titled "Совет Федерации" but no badge, and every post is a forward from *_council_gov_ru committee channels (t.me/s/council_gov_ru/9998, Wayback 20260315014618); council.gov.ru links telegram.me/sovfedofficial, not this channel (Wayback 20261007023438, 20250101005707) |
+| forwarded posts (all channels) | unofficial | origin channel not recorded (seen in captures: embassy channels, heroesofZ, pobeda_tv, mos_sobyanin) |
 
 ### robots.txt re-check after the lib fix (2026-10-02 16:05, fail-closed lib 092dfd6; all new-country collectors restarted on it)
 - president.gov.by — read OK; `/en/events/…`, `/ru/events/…` allowed (only `/*/search*` and photo/video popups disallowed).

@@ -22,6 +22,9 @@ Date corrections: dictionaries/date_corrections.json {"corrections": {doc id: "Y
 documents in immutable parts. Applied when a document is indexed, and to already-indexed rows on every run; null
 keeps the document out of the index.
 
+Telegram policy (TG_* below): telegram_ru posts that are forwards or come from an unverified channel are indexed as
+source telegram_unofficial_ru, outlet media; applied when indexed and to already-indexed rows on every run.
+
 Usage: uv run python scripts/build_index.py [--rebuild] [--trigram-all]
 """
 from __future__ import annotations
@@ -46,6 +49,31 @@ DB = ROOT / "index" / "corpus.sqlite"
 CORRECTIONS = ROOT / "dictionaries" / "date_corrections.json"
 META = ("id", "country", "source", "outlet", "org", "lang", "date", "url", "title", "speaker", "kind", "via")
 logger = logging.getLogger("build_index")
+
+# Telegram (collectors/ru_telegram.py, source telegram_ru). Only channels verified as the official account of a
+# ministry, body or serving official count as official, and only their own posts: a forward's origin channel is not
+# recorded, so forwards are not attributable. Everything else is indexed as source telegram_unofficial_ru, outlet
+# media (headline + link only on the site). Evidence for each verified channel: SOURCES.md, "Telegram channels".
+TG_SOURCE = "telegram_ru"
+TG_UNOFFICIAL = ("telegram_unofficial_ru", "media")
+TG_VERIFIED = frozenset({"MID_Russia", "mod_russia", "government_rus", "MariaVladimirovnaZakharova",
+                         "medvedev_telegram", "vv_volodin"})
+TG_FORWARDED = ROOT / "dictionaries" / "telegram_forwarded_ids.txt"  # forwards indexed before 2026-10-07
+
+
+def tg_unofficial(doc_id: str, forwarded: bool) -> bool:
+    """A telegram_ru post that is not an own post of a verified channel (id 'telegram_ru:<channel>/<post>')."""
+    return forwarded or doc_id.split(":", 1)[-1].split("/", 1)[0] not in TG_VERIFIED
+
+
+def apply_telegram_policy(con: sqlite3.Connection, forwarded_file: Path = TG_FORWARDED) -> int:
+    """Move already-indexed telegram_ru rows that fail the policy to the unofficial source; returns rows changed."""
+    lines = forwarded_file.read_text(encoding="utf-8").splitlines() if forwarded_file.exists() else []
+    fwd = {x.strip() for x in lines if x.strip() and not x.startswith("#")}
+    ids = [did for (did,) in con.execute("SELECT id FROM docs WHERE source=?", (TG_SOURCE,))
+           if tg_unofficial(did, did in fwd)]
+    con.executemany("UPDATE docs SET source=?, outlet=? WHERE id=?", [(*TG_UNOFFICIAL, did) for did in ids])
+    return len(ids)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, size INTEGER, mtime REAL, done INTEGER, prefix_sha TEXT, ndocs INTEGER);
@@ -176,6 +204,8 @@ def _insert_docs(con: sqlite3.Connection, rel: str, rows: Iterable[Dict],
             if corr[r["id"]] is None:
                 continue
             r = {**r, "date": corr[r["id"]]}
+        if r.get("source") == TG_SOURCE and tg_unofficial(r["id"], bool(r.get("forwarded"))):
+            r = {**r, "source": TG_UNOFFICIAL[0], "outlet": TG_UNOFFICIAL[1]}
         vals = [r.get(k) for k in META]
         sample, wayback = _extra(r, "sample"), _extra(r, "wayback")
         cur = con.execute(
@@ -268,6 +298,7 @@ def update(con: sqlite3.Connection, docs_dir: Path = DOCS, root: Optional[Path] 
         con.execute("DELETE FROM files WHERE path=?", (rel,))
         stats["files_removed"] += 1
     stats["dates_corrected"] = apply_corrections(con, corr)
+    stats["telegram_unofficial_moved"] = apply_telegram_policy(con)
     con.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('built', datetime('now'))")
     con.commit()
     return stats

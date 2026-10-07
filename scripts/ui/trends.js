@@ -16,7 +16,7 @@ const METRIC = { hostility: 'Hostility / confrontation', threat: 'Threat & coerc
 const TARGET = { US: 'United States', NATO: 'NATO', EU: 'European Union', UK: 'United Kingdom', JAPAN: 'Japan', ROK: 'South Korea',
   TAIWAN: 'Taiwan', PHILIPPINES: 'Philippines', UKRAINE: 'Ukraine', ISRAEL: 'Israel', CHINA: 'China', RUSSIA: 'Russia', IRAN: 'Iran',
   INDIA: 'India', PAKISTAN: 'Pakistan', DPRK: 'North Korea', AUSTRALIA: 'Australia', WEST: '"the West"' };
-const OUTLET = { official: 'official', state_media: 'state media', media: 'media' };
+const OUTLET = { official: 'official', state_media: 'state media', media: 'other media' };
 const TABS = [['alerts', 'Alerts'], ['country', 'Country tone'], ['heatmap', 'Stance & salience'], ['topics', 'Topics'],
   ['echoes', 'Echoes'], ['coverage', 'Coverage'], ['method', 'Method & validation']];
 
