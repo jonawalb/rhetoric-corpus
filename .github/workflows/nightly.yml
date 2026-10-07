@@ -10,7 +10,7 @@ on:
     inputs:
       collect_minutes:
         description: "Global collection budget (minutes)"
-        default: "100"
+        default: "70"
       skip_chains:
         description: "Comma list of collector chains to skip (see scripts/ci_collect.py --list)"
         default: ""
