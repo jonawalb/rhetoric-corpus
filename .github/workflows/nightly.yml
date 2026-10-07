@@ -136,6 +136,17 @@ jobs:
           timeout 55m uv run --no-sync python -m scripts.semantic.run --stage sync,targets,embed,score,topics,trends,echo,brief $B 2>&1 \
             | sed '/Loading weights/d' | tail -40
 
+      - name: Semantic trends refresh (when the semantic step stopped early)
+        id: semantic_trends
+        if: always() && steps.index.outcome == 'success' && steps.semantic.outcome != 'success'
+        continue-on-error: true
+        timeout-minutes: 30
+        run: |
+          # The 55-min cap above usually ends inside embed/score (large backlog), so its trends/echo/brief stages
+          # never ran and the Trends page went stale (generated 2026-10-05). Re-sync doc metadata (incl. source/outlet
+          # changes from the index) and rebuild the aggregates from whatever is scored so far.
+          timeout 25m uv run --no-sync python -m scripts.semantic.run --stage sync,trends,echo,brief 2>&1 | tail -20
+
       - name: Trends data
         id: trends
         if: always() && steps.index.outcome == 'success'
