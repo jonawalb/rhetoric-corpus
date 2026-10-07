@@ -158,9 +158,14 @@ jobs:
         if: always() && steps.pull.outcome == 'success'
         timeout-minutes: 40
         run: |
+          # The ~38 GB index (corpus.sqlite + semantic) uploads only on the weekly run (then squashed): every upload
+          # stores new copies of changed chunks, and nightly index uploads filled the free 100 GB private quota
+          # (2026-10-07). Nightly runs push everything else, so collected documents are never lost; the next run
+          # rebuilds the index incrementally from the parts it has not seen.
+          if [ "${{ steps.when.outputs.weekly }}" = true ]; then ONLY=""; else ONLY="--only docs,docs-parts,state,raw,reports,logs"; fi
           for i in 1 2 3; do
             uv run --no-sync python scripts/store_sync.py seal --keep-parts \
-              && uv run --no-sync python scripts/store_sync.py push && exit 0
+              && uv run --no-sync python scripts/store_sync.py push $ONLY && exit 0
             echo "push attempt $i failed; retrying in 60 s"; sleep 60
           done
           exit 1
