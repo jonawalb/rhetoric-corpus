@@ -189,22 +189,32 @@ def main() -> None:
         flush(rows, sents, country)
 
     n_sh = len(shards)
-    buckets: Dict[int, Dict[str, object]] = collections.defaultdict(dict)
+    # One bucket at a time (build, compress, write, free): the full delta lists for every token at once do not
+    # fit a 16 GB CI runner at 1.8M documents. Output is byte-identical to building all buckets first.
+    tok_by_bucket: Dict[int, List[str]] = collections.defaultdict(list)
+    for t in postings:
+        tok_by_bucket[bucket_of(t, BUCKETS)].append(t)
     n_common = 0
-    for t, ids in postings.items():
-        if len(ids) > COMMON * n_sh and n_sh > 10:
-            buckets[bucket_of(t, BUCKETS)][t] = -1
-            n_common += 1
-        else:
-            # delta-encode sorted shard ids
-            ids = sorted(ids)
-            buckets[bucket_of(t, BUCKETS)][t] = [ids[0]] + [ids[i] - ids[i - 1] for i in range(1, len(ids))]
-    dict_gz = dict_enc = 0
+    n_tokens = len(postings)
+    dict_gz = dict_enc = largest_bucket = 0
     for b in range(BUCKETS):
-        blob = gz(buckets.get(b, {}))
+        bucket: Dict[str, object] = {}
+        for t in tok_by_bucket.get(b, ()):
+            ids = postings.pop(t)
+            if len(ids) > COMMON * n_sh and n_sh > 10:
+                bucket[t] = -1
+                n_common += 1
+            else:
+                # delta-encode sorted shard ids
+                ids = sorted(ids)
+                bucket[t] = [ids[0]] + [ids[i] - ids[i - 1] for i in range(1, len(ids))]
+        blob = gz(bucket)
         (a.out / "t" / f"{b}.json.gz").write_bytes(blob)
+        if bucket:
+            largest_bucket = max(largest_bucket, len(blob))
         dict_gz += len(blob)
         dict_enc += enc_size(len(blob))
+    del tok_by_bucket
     # ---- media / commentary: token -> [(doc, count)] postings, doc metadata (title, link) only -------------
     media.sort(key=lambda d: (d[6], d[0]), reverse=True)  # media doc id = position, newest first
     mpost: Dict[str, array] = {}
@@ -239,33 +249,41 @@ def main() -> None:
             chunk_rows = []
     lite = gz({"day0": days[-1] if days else 0, "days": [x - (days[-1] if days else 0) for x in days], "src": msrc, "lang": mlang})
     (a.out / "m" / "docs.json.gz").write_bytes(lite)
-    mbuckets: Dict[int, Dict[str, list]] = collections.defaultdict(dict)
+    # Same bucket-at-a-time pattern as the official dictionary: ~33M media postings as Python lists for every
+    # bucket at once was the CI memory peak.
+    mtok_by_bucket: Dict[int, List[str]] = collections.defaultdict(list)
+    for t in mpost:
+        mtok_by_bucket[bucket_of(t, BUCKETS)].append(t)
     n_postings = 0
     n_mcommon = 0
-    for t, arr in mpost.items():
-        ids_, cnt = arr[0::2], arr[1::2]
-        if len(ids_) > MEDIA_COMMON * len(media) and len(media) > 1000:
-            mbuckets[bucket_of(t, BUCKETS)][t] = -1  # in most articles: "every document", no counts
-            n_mcommon += 1
-            continue
-        n_postings += len(ids_)
-        deltas = [ids_[0]] + [ids_[k] - ids_[k - 1] for k in range(1, len(ids_))]
-        # [doc deltas] when every count is 1, else [doc deltas, counts]
-        mbuckets[bucket_of(t, BUCKETS)][t] = deltas if max(cnt) == 1 else [deltas, list(cnt)]
-    mdict_gz = mdict_enc = 0
+    mdict_gz = mdict_enc = largest_mbucket = 0
     for b in range(BUCKETS):
-        blob = gz(mbuckets.get(b, {}))
+        mbucket: Dict[str, object] = {}
+        for t in mtok_by_bucket.get(b, ()):
+            arr = mpost.pop(t)
+            ids_, cnt = arr[0::2], arr[1::2]
+            if len(ids_) > MEDIA_COMMON * len(media) and len(media) > 1000:
+                mbucket[t] = -1  # in most articles: "every document", no counts
+                n_mcommon += 1
+                continue
+            n_postings += len(ids_)
+            deltas = [ids_[0]] + [ids_[k] - ids_[k - 1] for k in range(1, len(ids_))]
+            # [doc deltas] when every count is 1, else [doc deltas, counts]
+            mbucket[t] = deltas if max(cnt) == 1 else [deltas, list(cnt)]
+        blob = gz(mbucket)
         (a.out / "m" / "t" / f"{b}.json.gz").write_bytes(blob)
+        if mbucket:
+            largest_mbucket = max(largest_mbucket, len(blob))
         mdict_gz += len(blob)
         mdict_enc += enc_size(len(blob))
-    largest_mbucket = max((len(gz(v)) for v in mbuckets.values()), default=0)
-    del mpost, mbuckets
+    del mtok_by_bucket
+    del mpost
 
     meta = {"built": datetime.now(timezone.utc).replace(microsecond=0).isoformat(), "buckets": BUCKETS,
             "langs": langs, "sources": sources,
             "shards": [s[:6] + [s[7], s[8]] for s in shards],  # id, country, from, to, docs, sentences, sources, langs
             "media": {"docs": len(media), "chunk": MEDIA_CHUNK},
-            "totals": {"docs": sum(sh[4] for sh in shards), "media_docs": len(media), "sentences": total_sents, "dup_dropped": n_dup[0], "dedupe": a.dedupe, "shards": n_sh, "tokens": len(postings)},
+            "totals": {"docs": sum(sh[4] for sh in shards), "media_docs": len(media), "sentences": total_sents, "dup_dropped": n_dup[0], "dedupe": a.dedupe, "shards": n_sh, "tokens": n_tokens},
             "filter": {"countries": a.countries or "all", "sources": a.sources or "all", "exclude": excl,
                        "from": a.date_from, "to": a.date_to}}
     mblob = gz(meta)
@@ -273,7 +291,7 @@ def main() -> None:
     total_gz = gz_bytes + dict_gz + len(mblob) + m_meta_gz + len(lite) + mdict_gz
     total_enc = enc_bytes + dict_enc + enc_size(len(mblob)) + m_meta_enc + enc_size(len(lite)) + mdict_enc
     shipped_docs = sum(sh[4] for sh in shards)
-    report = {"docs": shipped_docs, "docs_selected": len(docs), "sentences": total_sents, "duplicate_sentences_dropped": n_dup[0], "shards": n_sh, "tokens": len(postings),
+    report = {"docs": shipped_docs, "docs_selected": len(docs), "sentences": total_sents, "duplicate_sentences_dropped": n_dup[0], "shards": n_sh, "tokens": n_tokens,
               "common_tokens": n_common, "raw_text_mb": round(raw_bytes / 1e6, 1),
               "shards_gz_mb": round(gz_bytes / 1e6, 1), "dict_gz_mb": round(dict_gz / 1e6, 1),
               "media_docs": len(media), "media_postings": n_postings, "media_common_tokens": n_mcommon, "media_dict_gz_mb": round(mdict_gz / 1e6, 1),
@@ -281,7 +299,7 @@ def main() -> None:
               "largest_media_bucket_kb": round(largest_mbucket / 1e3),
               "total_gz_mb": round(total_gz / 1e6, 1), "est_encrypted_mb": round(total_enc / 1e6, 1),
               "largest_shard_kb": round(max(s[6] for s in shards) / 1e3) if shards else 0,
-              "largest_bucket_kb": round(max(len(gz(v)) for v in buckets.values()) / 1e3) if buckets else 0,
+              "largest_bucket_kb": round(largest_bucket / 1e3),
               "seconds": round(time.time() - t0, 1)}
     STAGING.mkdir(parents=True, exist_ok=True)
     (STAGING / "last_build.json").write_text(json.dumps(report, indent=1))
