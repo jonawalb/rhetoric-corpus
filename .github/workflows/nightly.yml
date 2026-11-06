@@ -22,6 +22,13 @@ on:
         description: "Also run the weekly steps (full semantic pass, squash Hub history)"
         type: boolean
         default: false
+      index_minutes:
+        description: "Build-index time limit (minutes); raise for a catch-up run after missed nights"
+        default: "30"
+      skip_semantic:
+        description: "Skip the semantic scoring step (catch-up runs; trends still rebuild from what is scored)"
+        type: boolean
+        default: false
 
 concurrency:
   group: rhetoric-corpus-store    # one writer of the store at a time; a queued run waits, never overlaps
@@ -109,8 +116,9 @@ jobs:
         id: index
         if: always() && steps.pull.outcome == 'success'
         continue-on-error: true
-        timeout-minutes: 30
-        run: uv run --no-sync python scripts/build_index.py 2>&1 | tail -5
+        timeout-minutes: ${{ fromJSON(inputs.index_minutes || '30') }}
+        # Parts commit one at a time, so a timeout keeps the work done; it reaches the store only on a weekly push.
+        run: uv run --no-sync python scripts/build_index.py 2>&1 | tail -40
 
       - name: Push collected documents (early, so a later timeout never loses them)
         id: pushdocs
@@ -123,7 +131,7 @@ jobs:
 
       - name: Semantic layer (incremental)
         id: semantic
-        if: always() && steps.index.outcome == 'success'
+        if: always() && steps.index.outcome == 'success' && !inputs.skip_semantic
         continue-on-error: true
         timeout-minutes: 60
         run: |
