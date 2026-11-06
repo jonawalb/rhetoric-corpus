@@ -25,6 +25,9 @@ on:
       index_minutes:
         description: "Build-index time limit (minutes); raise for a catch-up run after missed nights"
         default: "30"
+      max_parts:
+        description: "Index at most N new document parts this run (0 = all); catch-up in batches"
+        default: "0"
       skip_semantic:
         description: "Skip the semantic scoring step (catch-up runs; trends still rebuild from what is scored)"
         type: boolean
@@ -122,8 +125,9 @@ jobs:
         # Parts commit one at a time, so a timeout keeps the work done; it reaches the store only on a weekly push.
         run: |
           if [ "${{ inputs.skip_semantic }}" = true ]; then DROP=--drop-indexed-parts; else DROP=; fi
-          df -h / | tail -1
-          uv run --no-sync python scripts/build_index.py $DROP 2>&1 | tail -40
+          (while sleep 300; do df -h / | tail -1; ls -la index/ | grep corpus; done) & MON=$!
+          uv run --no-sync python scripts/build_index.py $DROP --max-parts ${{ inputs.max_parts || '0' }} 2>&1 | grep -v "^\s*$" | tail -n +1 | cut -c1-200
+          kill $MON || true
           df -h / | tail -1
 
       - name: Push collected documents (early, so a later timeout never loses them)

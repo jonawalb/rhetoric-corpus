@@ -242,7 +242,7 @@ def _delete_unsealed(con: sqlite3.Connection, rel: str, root: Path) -> int:
 
 
 def update(con: sqlite3.Connection, docs_dir: Path = DOCS, root: Optional[Path] = None,
-           corrections: Optional[Path] = None, drop_parts: bool = False) -> Dict[str, int]:
+           corrections: Optional[Path] = None, drop_parts: bool = False, max_parts: int = 0) -> Dict[str, int]:
     """root: checkout holding docs-parts/ and state/ids/ (default: the parent of docs_dir); corrections: date
     corrections file (default dictionaries/date_corrections.json); drop_parts: delete each local part file once it is
     indexed and committed (frees runner disk on catch-up runs; the store keeps every part and push never deletes one)."""
@@ -257,6 +257,9 @@ def update(con: sqlite3.Connection, docs_dir: Path = DOCS, root: Optional[Path] 
         if rel in known:
             stats["parts_known"] += 1
             continue
+        if max_parts and stats["parts_indexed"] >= max_parts:
+            stats["parts_left"] = stats.get("parts_left", 0) + 1
+            continue  # left for the next run (catch-up in batches)
         added, dup = _insert_docs(con, rel, _iter_part(path), corr)
         st = path.stat()
         con.execute("INSERT OR REPLACE INTO files(path, size, mtime, done, prefix_sha, ndocs) VALUES(?,?,?,?,?,?)",
@@ -317,6 +320,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("--root", type=Path, default=None, help="checkout with docs-parts/ and state/ids/ (default: --docs/..)")
     ap.add_argument("--drop-indexed-parts", action="store_true",
                     help="delete each local docs-parts file after it is indexed (the store keeps it)")
+    ap.add_argument("--max-parts", type=int, default=0, help="index at most N new parts this run (0 = all)")
     ap.add_argument("--optimize", action="store_true", help="merge FTS segments and VACUUM afterwards")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -327,7 +331,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     con = connect(a.db)
     if a.rebuild:
         con.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('trigram_all', ?)", ("1" if a.trigram_all else "0",))
-    stats = update(con, a.docs, a.root, drop_parts=a.drop_indexed_parts)
+    stats = update(con, a.docs, a.root, drop_parts=a.drop_indexed_parts, max_parts=a.max_parts)
     if a.optimize or a.rebuild:
         con.execute("INSERT INTO fts_words(fts_words) VALUES('optimize')")
         con.execute("INSERT INTO fts_cjk(fts_cjk) VALUES('optimize')")
