@@ -242,9 +242,10 @@ def _delete_unsealed(con: sqlite3.Connection, rel: str, root: Path) -> int:
 
 
 def update(con: sqlite3.Connection, docs_dir: Path = DOCS, root: Optional[Path] = None,
-           corrections: Optional[Path] = None) -> Dict[str, int]:
+           corrections: Optional[Path] = None, drop_parts: bool = False) -> Dict[str, int]:
     """root: checkout holding docs-parts/ and state/ids/ (default: the parent of docs_dir); corrections: date
-    corrections file (default dictionaries/date_corrections.json)."""
+    corrections file (default dictionaries/date_corrections.json); drop_parts: delete each local part file once it is
+    indexed and committed (frees runner disk on catch-up runs; the store keeps every part and push never deletes one)."""
     root = docs_dir.parent if root is None else root
     stats = {"files_skipped": 0, "files_appended": 0, "files_reindexed": 0, "files_removed": 0,
              "docs_added": 0, "docs_removed": 0, "dup_ids": 0, "parts_indexed": 0, "parts_known": 0,
@@ -261,6 +262,8 @@ def update(con: sqlite3.Connection, docs_dir: Path = DOCS, root: Optional[Path] 
         con.execute("INSERT OR REPLACE INTO files(path, size, mtime, done, prefix_sha, ndocs) VALUES(?,?,?,?,?,?)",
                     (rel, st.st_size, st.st_mtime, st.st_size, _prefix_sha(path, st.st_size), added))
         con.commit()
+        if drop_parts:
+            path.unlink(missing_ok=True)
         stats["parts_indexed"] += 1
         stats["docs_added"] += added
         stats["dup_ids"] += dup
@@ -312,6 +315,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     ap.add_argument("--db", type=Path, default=DB)
     ap.add_argument("--docs", type=Path, default=DOCS)
     ap.add_argument("--root", type=Path, default=None, help="checkout with docs-parts/ and state/ids/ (default: --docs/..)")
+    ap.add_argument("--drop-indexed-parts", action="store_true",
+                    help="delete each local docs-parts file after it is indexed (the store keeps it)")
     ap.add_argument("--optimize", action="store_true", help="merge FTS segments and VACUUM afterwards")
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -322,7 +327,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     con = connect(a.db)
     if a.rebuild:
         con.execute("INSERT OR REPLACE INTO meta(k, v) VALUES('trigram_all', ?)", ("1" if a.trigram_all else "0",))
-    stats = update(con, a.docs, a.root)
+    stats = update(con, a.docs, a.root, drop_parts=a.drop_indexed_parts)
     if a.optimize or a.rebuild:
         con.execute("INSERT INTO fts_words(fts_words) VALUES('optimize')")
         con.execute("INSERT INTO fts_cjk(fts_cjk) VALUES('optimize')")

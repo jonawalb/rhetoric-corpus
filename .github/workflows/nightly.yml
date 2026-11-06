@@ -67,6 +67,8 @@ jobs:
           # 16 GB RAM runners: the 1.8M-document site build died mid-upload on 2026-10-06 (runner lost, exit 143).
           # Swap on the spare disk keeps a memory peak from killing the runner.
           sudo swapoff -a || true
+          # Catch-up runs (skip_semantic, no publish) need the disk for the index more than swap.
+          if [ "${{ inputs.skip_semantic }}" = true ]; then free -g | head -3; exit 0; fi
           sudo fallocate -l 16G /swapfile2 && sudo chmod 600 /swapfile2 && sudo mkswap /swapfile2 >/dev/null && sudo swapon /swapfile2
           free -g | head -3
 
@@ -118,7 +120,11 @@ jobs:
         continue-on-error: true
         timeout-minutes: ${{ fromJSON(inputs.index_minutes || '30') }}
         # Parts commit one at a time, so a timeout keeps the work done; it reaches the store only on a weekly push.
-        run: uv run --no-sync python scripts/build_index.py 2>&1 | tail -40
+        run: |
+          if [ "${{ inputs.skip_semantic }}" = true ]; then DROP=--drop-indexed-parts; else DROP=; fi
+          df -h / | tail -1
+          uv run --no-sync python scripts/build_index.py $DROP 2>&1 | tail -40
+          df -h / | tail -1
 
       - name: Push collected documents (early, so a later timeout never loses them)
         id: pushdocs
